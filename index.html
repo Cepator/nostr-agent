@@ -95,7 +95,7 @@ async function run(){
     var p=function(r){status("Downloading model...","",Math.max(0.05,r.progress));};
     engine=await w.CreateMLCEngine(MODEL,{initProgressCallback:p});
     status("Ready","ok",1);
-    if(HEADLESS){notify("agent-ready",{});return;}
+    if(HEADLESS){await openMemory();notify("agent-memory",{count:(await getMemory()).length});notify("agent-ready",{});return;}
     i.disabled=false;b.disabled=false;i.focus();
     var g=await talk("Start a conversation. Say something interesting about yourself, not a greeting.");
     msg("a",g);
@@ -133,8 +133,14 @@ if(HEADLESS){
     if(e.data&&e.data.type==="user-message"){
       var text=e.data.content;
       status("Thinking...","",0);
-      talk(text).then(function(reply){
+      talk(text).then(async function(reply){
         msg("a",reply);
+        var mem=await getMemory();
+        var count=parseInt(mem.find(function(m){return m.key==="conversation-count"})?.value||"0");
+        await setMemory("conversation-count",String(count+1));
+        var nameMatch=text.match(/my name is (\w+)/i);
+        if(nameMatch)await setMemory("user-name",nameMatch[1]);
+        notify("agent-memory",{count:(await getMemory()).length});
         status("Ready","ok",1);
       }).catch(function(err){status("Error: "+err.message,"err",0);});
     }
