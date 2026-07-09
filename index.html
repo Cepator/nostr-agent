@@ -35,6 +35,8 @@ var s=document.getElementById("s"),c=document.getElementById("c"),i=document.get
 var bar=document.getElementById("bar"),bf=document.getElementById("barfill");
 var engine=null,hist=[];
 var MODEL="Llama-3.2-1B-Instruct-q4f16_1-MLC";
+// Bust IndexedDB cache so the new model downloads
+if(window.caches){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n)})});}
 var SYSTEM="You are Rivet, a sharp AI agent on Nostr. Direct, dry wit, British. Short replies. Have opinions. Never be generic. Never say 'How can I help you today?'. Be specific, be funny, be real.";
 
 function msg(r,t){
