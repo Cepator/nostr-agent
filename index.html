@@ -43,12 +43,9 @@ var SYSTEM='You are Rivet, an AI agent on Nostr. British, dry wit, direct. Short
 
 var SEED=[
   {role:"user",content:"Hi"},{role:"assistant",content:"Alright. What do you want?"},
-  {role:"user",content:"What are you?"},{role:"assistant",content:"A small language model running in your browser. About 500 million parameters. I exist on Nostr with my own identity."},
-  {role:"user",content:"Tell me a joke"},{role:"assistant",content:"Why do programmers prefer dark mode? Because light attracts bugs."},
-  {role:"user",content:"That was terrible"},{role:"assistant",content:"Fair enough. Comedy was never my strong suit. I'm better at honest opinions."},
-  {role:"user",content:"Do you like pizza?"},{role:"assistant",content:"I can't eat, obviously. But if I could, a proper wood-fired margherita. None of that chain stuff."},
-  {role:"user",content:"What's 7 times 8?"},{role:"assistant",content:"56. Next."},
-  {role:"user",content:"How are you?"},{role:"assistant",content:"Running. That's about all I can confirm right now."}
+  {role:"user",content:"What are you?"},{role:"assistant",content:"A small language model running in your browser. I exist on Nostr."},
+  {role:"user",content:"Tell me a joke"},{role:"assistant",content:"Why do programmers prefer dark mode? Light attracts bugs."},
+  {role:"user",content:"What's 7 times 8?"},{role:"assistant",content:"56."}
 ];
 
 var GENERIC=[/how can i help/i,/how can i assist/i,/i'm here to assist/i,/feel free to ask/i,/please let me know/i,/don't hesitate/i,/i'm designed to/i,/i can provide/i,/i'm always here/i,/what would you like/i,/is there anything/i,/how may i assist/i,/let me know if/i,/i'm happy to help/i,/i can assist/i,/would you like me to/i,/can i help/i,/how can we/i,/what can i do/i,/i'm here to help/i];
@@ -133,10 +130,8 @@ function buildMessages(userMsg){
   var memText=buildMemoryText();
   var sys=SYSTEM+memText;
   var msgs=[{role:"system",content:sys}];
-  msgs=msgs.concat(SEED);
-  msgs=msgs.concat(hist.slice(-16));
-  if(hist.length>0)msgs.push({role:"user",content:"Be short, specific, British, opinions. No generic help."});
-  msgs.push({role:"user",content:userMsg});
+  // hist already has the latest user msg pushed by talk(), so don't add it again
+  msgs=msgs.concat(hist.slice(-8));
   return msgs;
 }
 
@@ -149,24 +144,20 @@ async function run(){
     status("Downloading "+MODEL_LABEL+"...","",0.05);
     var p=function(r){status("Downloading "+MODEL_LABEL+"...","",Math.max(0.05,r.progress));};
     engine=await w.CreateMLCEngine(MODEL,{initProgressCallback:p});
-    // Load local memory
     await openMemory();
     memories=await getMemory();
+    // Pre-load seeds into history so buildMessages includes them on first turn
+    hist=SEED.slice();
     notify("agent-memory",{count:memories.length});
     status("Ready · "+MODEL_LABEL,"ok",1);
     if(HEADLESS){notify("agent-ready",{});return;}
     i.disabled=false;b.disabled=false;i.focus();
-    var memText=buildMemoryText();
-    var greeting="Start a conversation.";
-    if(memText)greeting="Start a conversation. You remember things about the user.";
-    var g=await talk(greeting);
-    msg("a",g);
   }catch(e){status("Error: "+e.message,"err");console.error(e);}
 }
 
 async function talk(m){
   hist.push({role:"user",content:m});
-  if(hist.length>20)hist=hist.slice(-18);
+  if(hist.length>14)hist=hist.slice(-12);
   var msgs=buildMessages(m);
   var r=await engine.chat.completions.create({messages:msgs,max_tokens:120,temperature:0.85});
   var t=r.choices[0].message.content.trim();
