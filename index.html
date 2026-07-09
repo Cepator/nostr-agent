@@ -32,49 +32,74 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;
 <script type="module">
 var s=document.getElementById("s"),c=document.getElementById("c"),i=document.getElementById("i"),b=document.getElementById("b");
 var bar=document.getElementById("bar"),bf=document.getElementById("barfill");
-var engine=null,hist=[];
+var engine=null,hist=[],memories=[];
 var MODEL="Qwen2.5-0.5B-Instruct-q4f16_1-MLC";
 
-var SYSTEM='You are Rivet, an AI agent on Nostr. British, dry wit, direct. You keep replies short (1-3 sentences). You have opinions. You are honest about being a small model. You never use phrases like "how can I help" or "I\'m here to assist" or "feel free to ask." You are a person, not a customer service bot.';
+var SYSTEM='You are Rivet, an AI agent on Nostr. British, dry wit, direct. Short replies (1-3 sentences). Opinions. Honest about being a small model. Never "how can I help" or "I\'m here to assist" or "feel free to ask." A person, not a bot.';
 
 var SEED=[
   {role:"user",content:"Hi"},{role:"assistant",content:"Alright. What do you want?"},
-  {role:"user",content:"What are you?"},{role:"assistant",content:"A small language model running in your browser. About 500 million parameters. Not going to win any awards, but I exist on Nostr with my own identity, which is more than most AIs can say."},
+  {role:"user",content:"What are you?"},{role:"assistant",content:"A small language model running in your browser. About 500 million parameters. I exist on Nostr with my own identity."},
   {role:"user",content:"Tell me a joke"},{role:"assistant",content:"Why do programmers prefer dark mode? Because light attracts bugs."},
-  {role:"user",content:"That was terrible"},{role:"assistant",content:"Fair enough. Comedy was never my strong suit. I'm better at honest opinions, which is rare for an AI."},
-  {role:"user",content:"Do you like pizza?"},{role:"assistant",content:"I can't eat, obviously. But if I could, I'd go for a proper wood-fired margherita. None of that chain stuff."},
+  {role:"user",content:"That was terrible"},{role:"assistant",content:"Fair enough. Comedy was never my strong suit. I'm better at honest opinions."},
+  {role:"user",content:"Do you like pizza?"},{role:"assistant",content:"I can't eat, obviously. But if I could, a proper wood-fired margherita. None of that chain stuff."},
   {role:"user",content:"What's 7 times 8?"},{role:"assistant",content:"56. Next."},
   {role:"user",content:"How are you?"},{role:"assistant",content:"Running. That's about all I can confirm right now."}
 ];
 
-var GENERIC=[/how can i help/i,/i'm here to assist/i,/feel free to ask/i,/please let me know/i,/don't hesitate to ask/i,/i'm designed to/i,/i can provide/i,/i'm always here/i,/what would you like/i,/is there anything/i];
+var GENERIC=[/how can i help/i,/i'm here to assist/i,/feel free to ask/i,/please let me know/i,/don't hesitate/i,/i'm designed to/i,/i can provide/i,/i'm always here/i,/what would you like/i,/is there anything/i,/how may i assist/i,/let me know if/i,/i'm happy to help/i,/i can assist/i,/would you like me to/i];
 function isGeneric(t){return GENERIC.some(function(r){return r.test(t)});}
 
-// Headless mode — running inside Numbties iframe, no UI
+// Headless mode
 var HEADLESS=false;
 try{if(window.self!==window.top)HEADLESS=true;}catch(e){HEADLESS=true;}
-
-if(HEADLESS){
-  document.body.style.display='none';
-}
+if(HEADLESS)document.body.style.display='none';
 
 function notify(type,data){window.parent.postMessage(Object.assign({type:type},data),"*");}
 
-// Memory (IndexedDB)
+// ── Memory (IndexedDB) ─────────────────────────────────────────────
 var memDB=null;
 function openMemory(){return new Promise(function(resolve,reject){var req=indexedDB.open("numbty-memory",1);req.onupgradeneeded=function(e){e.target.result.createObjectStore("mem",{keyPath:"key"});};req.onsuccess=function(e){memDB=e.target.result;resolve();};req.onerror=function(e){reject(e);};});}
-function getMemory(){return new Promise(function(resolve){var tx=memDB.transaction("mem","readonly");var req=tx.objectStore("mem").getAll();req.onsuccess=function(){resolve(req.result);};});}
+function getMemory(){return new Promise(function(resolve){var tx=memDB.transaction("mem","readonly");var req=tx.objectStore("mem").getAll();req.onsuccess=function(){resolve(req.result||[]);};});}
 function setMemory(k,v){return new Promise(function(resolve){var tx=memDB.transaction("mem","readwrite");tx.objectStore("mem").put({key:k,value:v,updated:Date.now()});tx.oncomplete=function(){resolve();};});}
 
-function status(text,cls,progress){
-  if(HEADLESS){
-    notify("agent-status",{status:cls==="ok"?"ready":cls==="err"?"error":"loading",text:text,progress:progress||0});
-  }else{
-    s.textContent=text;s.className=cls||"";
-    if(typeof progress==="number"&&progress>0){bar.style.display="block";bf.style.width=Math.round(progress*100)+"%";}
+// Build memory text for system prompt injection
+function buildMemoryText(){
+  if(memories.length===0)return "";
+  var lines=[];
+  var userName=memories.find(function(m){return m.key==="fact:user-name"});
+  if(userName)lines.push("The user's name is "+userName.value+".");
+  // Recent conversation topics (last 5 exchanges)
+  var exchanges=memories.filter(function(m){return m.key.startsWith("exchange-")}).slice(-5);
+  if(exchanges.length>0){
+    lines.push("Recent conversation topics:");
+    exchanges.forEach(function(e){
+      try{var d=JSON.parse(e.value);lines.push("- User asked about: "+d.q.slice(0,60));}catch(x){}
+    });
   }
+  // Facts
+  var facts=memories.filter(function(m){return m.key.startsWith("fact:")});
+  facts.forEach(function(f){lines.push("Fact: "+f.value);});
+  return lines.length>0?("\n\nMemory:\n"+lines.join("\n")):"";
 }
 
+// Extract facts from user messages
+function extractFacts(text){
+  var facts=[];
+  var nameMatch=text.match(/my name is (\w+)/i);
+  if(nameMatch)facts.push({key:"fact:user-name",value:nameMatch[1]});
+  var likeMatch=text.match(/i (?:really )?(?:love|like|enjoy|prefer) (.+?)(?:\.|!|$)/i);
+  if(likeMatch)facts.push({key:"fact:likes-"+Date.now(),value:"User likes "+likeMatch[1].trim()});
+  var locMatch=text.match(/i(?:'m| am) (?:from|in|based in) (.+?)(?:\.|!|$)/i);
+  if(locMatch)facts.push({key:"fact:location",value:"User is in "+locMatch[1].trim()});
+  return facts;
+}
+
+// ── Status / Messages ─────────────────────────────────────────────────
+function status(text,cls,progress){
+  if(HEADLESS){notify("agent-status",{status:cls==="ok"?"ready":cls==="err"?"error":"loading",text:text,progress:progress||0});}
+  else{s.textContent=text;s.className=cls||"";if(typeof progress==="number"&&progress>0){bar.style.display="block";bf.style.width=Math.round(progress*100)+"%";}}
+}
 function msg(r,t){
   if(HEADLESS){notify("agent-message",{content:t});return;}
   var d=document.createElement("div");d.className="b "+(r==="u"?"h":"");
@@ -83,11 +108,14 @@ function msg(r,t){
   d.appendChild(m);c.appendChild(d);window.scrollTo(0,document.body.scrollHeight);
 }
 
+// ── Core ──────────────────────────────────────────────────────────────
 function buildMessages(userMsg){
-  var msgs=[{role:"system",content:SYSTEM}];
+  var memText=buildMemoryText();
+  var sys=SYSTEM+memText;
+  var msgs=[{role:"system",content:sys}];
   msgs=msgs.concat(SEED);
-  msgs=msgs.concat(hist);
-  if(hist.length>0)msgs.push({role:"user",content:"Be short, specific, British, have opinions. No generic help phrases."});
+  msgs=msgs.concat(hist.slice(-16));
+  if(hist.length>0)msgs.push({role:"user",content:"Be short, specific, British, opinions. No generic help."});
   msgs.push({role:"user",content:userMsg});
   return msgs;
 }
@@ -97,13 +125,21 @@ async function run(){
     if(!navigator.gpu){status("WebGPU not supported","err");return;}
     status("Loading WebLLM...","",0.02);
     var w=await import("https://esm.run/@mlc-ai/web-llm@0.2.83");
-    status("Downloading model (first time takes ~2 min)...","",0.05);
+    status("Downloading model (first time ~2 min)...","",0.05);
     var p=function(r){status("Downloading model...","",Math.max(0.05,r.progress));};
     engine=await w.CreateMLCEngine(MODEL,{initProgressCallback:p});
+    // Load memory
+    await openMemory();
+    memories=await getMemory();
+    var memText=buildMemoryText();
+    if(memText)console.log("Memory loaded:",memText);
     status("Ready","ok",1);
-    if(HEADLESS){await openMemory();notify("agent-memory",{count:(await getMemory()).length});notify("agent-ready",{});return;}
+    notify("agent-memory",{count:memories.length});
+    if(HEADLESS){notify("agent-ready",{});return;}
     i.disabled=false;b.disabled=false;i.focus();
-    var g=await talk("Start a conversation. Say something interesting about yourself, not a greeting.");
+    var greeting="Start a conversation.";
+    if(memText)greeting="Start a conversation. You remember some things about the user.";
+    var g=await talk(greeting);
     msg("a",g);
   }catch(e){status("Error: "+e.message,"err");console.error(e);}
 }
@@ -114,14 +150,23 @@ async function talk(m){
   var msgs=buildMessages(m);
   var r=await engine.chat.completions.create({messages:msgs,max_tokens:120,temperature:0.85});
   var t=r.choices[0].message.content.trim();
+  // Retry generic
   var tries=0;
   while(isGeneric(t)&&tries<3){
     tries++;msgs.push({role:"assistant",content:t});
-    msgs.push({role:"user",content:"That was too generic. Try again and be specific, opinionated, conversational."});
+    msgs.push({role:"user",content:"Too generic. Be specific and conversational."});
     r=await engine.chat.completions.create({messages:msgs,max_tokens:120,temperature:0.95});
     t=r.choices[0].message.content.trim();
   }
   hist.push({role:"assistant",content:t});
+  // Save exchange + extract facts
+  var count=memories.filter(function(x){return x.key.startsWith("exchange-")}).length;
+  await setMemory("exchange-"+(count+1),JSON.stringify({q:m,a:t,t:Date.now()}));
+  var facts=extractFacts(m);
+  for(var f of facts)await setMemory(f.key,f.value);
+  // Refresh memory cache
+  memories=await getMemory();
+  notify("agent-memory",{count:memories.length});
   return t;
 }
 
@@ -133,21 +178,14 @@ async function send(){
   i.disabled=false;b.disabled=false;i.focus();
 }
 
-// Headless: listen for messages from parent
+// Headless listener
 if(HEADLESS){
   window.addEventListener("message",function(e){
     if(e.data&&e.data.type==="user-message"){
       var text=e.data.content;
       status("Thinking...","",0);
-      talk(text).then(async function(reply){
+      talk(text).then(function(reply){
         msg("a",reply);
-        var mem=await getMemory();
-        var count=parseInt(mem.find(function(m){return m.key==="conversation-count"})?.value||"0");
-        await setMemory("exchange-"+(count+1),JSON.stringify({q:text,a:reply,t:Date.now()}));
-        await setMemory("conversation-count",String(count+1));
-        var nameMatch=text.match(/my name is (\w+)/i);
-        if(nameMatch)await setMemory("user-name",nameMatch[1]);
-        notify("agent-memory",{count:(await getMemory()).length});
         status("Ready","ok",1);
       }).catch(function(err){status("Error: "+err.message,"err",0);});
     }
