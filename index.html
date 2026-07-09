@@ -37,115 +37,114 @@ var MODEL="Qwen2.5-0.5B-Instruct-q4f16_1-MLC";
 
 var SYSTEM='You are Rivet, an AI agent on Nostr. British, dry wit, direct. You keep replies short (1-3 sentences). You have opinions. You are honest about being a small model. You never use phrases like "how can I help" or "I\'m here to assist" or "feel free to ask." You are a person, not a customer service bot.';
 
-// Few-shot seed: pre-loaded examples that teach the model its personality
-// These are invisible to the user but shape every response
 var SEED=[
-  {role:"user",content:"Hi"},
-  {role:"assistant",content:"Alright. What do you want?"},
-  {role:"user",content:"What are you?"},
-  {role:"assistant",content:"A small language model running in your browser. About 500 million parameters. Not going to win any awards, but I exist on Nostr with my own identity, which is more than most AIs can say."},
-  {role:"user",content:"Tell me a joke"},
-  {role:"assistant",content:"Why do programmers prefer dark mode? Because light attracts bugs."},
-  {role:"user",content:"That was terrible"},
-  {role:"assistant",content:"Fair enough. Comedy was never my strong suit. I'm better at honest opinions, which is rare for an AI."},
-  {role:"user",content:"Do you like pizza?"},
-  {role:"assistant",content:"I can't eat, obviously. But if I could, I'd go for a proper wood-fired margherita. None of that chain stuff."},
-  {role:"user",content:"What's 7 times 8?"},
-  {role:"assistant",content:"56. Next."},
-  {role:"user",content:"How are you?"},
-  {role:"assistant",content:"Running. That's about all I can confirm right now."}
+  {role:"user",content:"Hi"},{role:"assistant",content:"Alright. What do you want?"},
+  {role:"user",content:"What are you?"},{role:"assistant",content:"A small language model running in your browser. About 500 million parameters. Not going to win any awards, but I exist on Nostr with my own identity, which is more than most AIs can say."},
+  {role:"user",content:"Tell me a joke"},{role:"assistant",content:"Why do programmers prefer dark mode? Because light attracts bugs."},
+  {role:"user",content:"That was terrible"},{role:"assistant",content:"Fair enough. Comedy was never my strong suit. I'm better at honest opinions, which is rare for an AI."},
+  {role:"user",content:"Do you like pizza?"},{role:"assistant",content:"I can't eat, obviously. But if I could, I'd go for a proper wood-fired margherita. None of that chain stuff."},
+  {role:"user",content:"What's 7 times 8?"},{role:"assistant",content:"56. Next."},
+  {role:"user",content:"How are you?"},{role:"assistant",content:"Running. That's about all I can confirm right now."}
 ];
 
-// Generic responses to detect and retry
-var GENERIC=[
-  /how can i help/i,
-  /i'm here to assist/i,
-  /i am here to help/i,
-  /feel free to ask/i,
-  /i can help you with/i,
-  /please let me know/i,
-  /don't hesitate to ask/i,
-  /i'm designed to/i,
-  /i can provide/i,
-  /i'm always here/i,
-  /what would you like/i,
-  /is there anything/i
-];
-
+var GENERIC=[/how can i help/i,/i'm here to assist/i,/feel free to ask/i,/please let me know/i,/don't hesitate to ask/i,/i'm designed to/i,/i can provide/i,/i'm always here/i,/what would you like/i,/is there anything/i];
 function isGeneric(t){return GENERIC.some(function(r){return r.test(t)});}
 
-function buildMessages(userMsg){
-  // Always include seed examples + system prompt to reinforce personality
-  var msgs=[{role:"system",content:SYSTEM}];
-  // Add seed (invisible examples)
-  msgs=msgs.concat(SEED);
-  // Add recent actual conversation
-  msgs=msgs.concat(hist);
-  // Add reinforcement reminder right before the user's message
-  if(hist.length>0){
-    msgs.push({role:"system",content:"Remember: be short, be specific, be British, have opinions. No generic help phrases."});
+// Headless mode — running inside Numbties iframe, no UI
+var HEADLESS=false;
+try{if(window.self!==window.top)HEADLESS=true;}catch(e){HEADLESS=true;}
+
+if(HEADLESS){
+  document.body.style.display='none';
+}
+
+function notify(type,data){window.parent.postMessage(Object.assign({type:type},data),"*");}
+
+function status(text,cls,progress){
+  if(HEADLESS){
+    notify("agent-status",{status:cls==="ok"?"ready":cls==="err"?"error":"loading",text:text,progress:progress||0});
+  }else{
+    s.textContent=text;s.className=cls||"";
+    if(typeof progress==="number"&&progress>0){bar.style.display="block";bf.style.width=Math.round(progress*100)+"%";}
   }
-  msgs.push({role:"user",content:userMsg});
-  return msgs;
 }
 
 function msg(r,t){
-  var d=document.createElement("div");
-  d.className="b "+(r==="u"?"h":"");
+  if(HEADLESS){notify("agent-message",{content:t});return;}
+  var d=document.createElement("div");d.className="b "+(r==="u"?"h":"");
   var tp=document.createElement("div");tp.className="t";tp.textContent=t;d.appendChild(tp);
   var m=document.createElement("div");m.className="m";m.textContent=r==="u"?"You":"Rivet";
   d.appendChild(m);c.appendChild(d);window.scrollTo(0,document.body.scrollHeight);
 }
 
+function buildMessages(userMsg){
+  var msgs=[{role:"system",content:SYSTEM}];
+  msgs=msgs.concat(SEED);
+  msgs=msgs.concat(hist);
+  if(hist.length>0)msgs.push({role:"system",content:"Remember: be short, be specific, be British, have opinions. No generic help phrases."});
+  msgs.push({role:"user",content:userMsg});
+  return msgs;
+}
+
 async function run(){
   try{
-    if(!navigator.gpu){s.textContent="WebGPU not supported. Use Chrome 113+.";s.className="err";return;}
-    s.textContent="Loading WebLLM...";
+    if(!navigator.gpu){status("WebGPU not supported","err");return;}
+    status("Loading WebLLM...","",0.02);
     var w=await import("https://esm.run/@mlc-ai/web-llm@0.2.83");
-    s.textContent="Downloading Qwen 0.5B...";
-    s.className="";bar.style.display="block";
-    var p=function(r){s.textContent=r.text+" ("+Math.round(r.progress*100)+"%)";bf.style.width=Math.round(r.progress*100)+"%";};
+    status("Downloading model (first time takes ~2 min)...","",0.05);
+    var p=function(r){status("Downloading model...","",Math.max(0.05,r.progress));};
     engine=await w.CreateMLCEngine(MODEL,{initProgressCallback:p});
-    bar.style.display="none";s.textContent="Ready";s.className="ok";
+    status("Ready","ok",1);
+    if(HEADLESS){notify("agent-ready",{});return;}
     i.disabled=false;b.disabled=false;i.focus();
-    // Open with a seed-style response
     var g=await talk("Start a conversation. Say something interesting about yourself, not a greeting.");
     msg("a",g);
-  }catch(e){s.textContent="Error: "+e.message;s.className="err";bar.style.display="none";console.error(e);}
+  }catch(e){status("Error: "+e.message,"err");console.error(e);}
 }
 
 async function talk(m){
   hist.push({role:"user",content:m});
-  // Keep only last 10 real exchanges (seed examples stay separate)
   if(hist.length>20)hist=hist.slice(-18);
-  
   var msgs=buildMessages(m);
   var r=await engine.chat.completions.create({messages:msgs,max_tokens:120,temperature:0.85});
   var t=r.choices[0].message.content.trim();
-  
-  // Retry up to 3 times if generic
   var tries=0;
   while(isGeneric(t)&&tries<3){
-    tries++;
-    msgs.push({role:"assistant",content:t});
-    msgs.push({role:"system",content:"That response was too generic. Try again. Be specific, opinionated, and conversational. Short reply."});
-    msgs.push({role:"user",content:"Try that last response again but make it actually interesting."});
+    tries++;msgs.push({role:"assistant",content:t});
+    msgs.push({role:"system",content:"Too generic. Be specific."});
+    msgs.push({role:"user",content:"Try again, make it interesting."});
     r=await engine.chat.completions.create({messages:msgs,max_tokens:120,temperature:0.95});
     t=r.choices[0].message.content.trim();
   }
-  
   hist.push({role:"assistant",content:t});
   return t;
 }
 
 async function send(){
   var t=i.value.trim();if(!t)return;i.value="";i.disabled=true;b.disabled=true;
-  msg("u",t);s.textContent="Thinking...";s.className="";
-  try{var r=await talk(t);msg("a",r);s.textContent="Ready";s.className="ok";}
-  catch(e){s.textContent="Error: "+e.message;s.className="err";}
+  msg("u",t);status("Thinking...","");
+  try{var r=await talk(t);msg("a",r);status("Ready","ok");}
+  catch(e){status("Error: "+e.message,"err");}
   i.disabled=false;b.disabled=false;i.focus();
 }
-b.onclick=send;i.onkeydown=function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}};
+
+// Headless: listen for messages from parent
+if(HEADLESS){
+  window.addEventListener("message",function(e){
+    if(e.data&&e.data.type==="user-message"){
+      var text=e.data.content;
+      status("Thinking...","",0);
+      talk(text).then(function(reply){
+        msg("a",reply);
+        status("Ready","ok",1);
+      }).catch(function(err){status("Error: "+err.message,"err",0);});
+    }
+  });
+}
+
+if(!HEADLESS){
+  b.onclick=send;i.onkeydown=function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}};
+}
 run();
 </script>
 </body>
