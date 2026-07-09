@@ -140,7 +140,7 @@ async function run(){
     if(!navigator.gpu){status("WebGPU not supported","err");return;}
     MODEL_LABEL=MODEL_NAMES[MODEL]||MODEL;
     status("Loading WebLLM...","",0.02);
-    var w=await import("https://esm.run/@mlc-ai/web-llm@0.2.83");
+    var w=await import("https://esm.run/@mlc-ai/web-llm@0.2.84");
     status("Downloading "+MODEL_LABEL+"...","",0.05);
     var p=function(r){status("Downloading "+MODEL_LABEL+"...","",Math.max(0.05,r.progress));};
     engine=await w.CreateMLCEngine(MODEL,{initProgressCallback:p});
@@ -191,10 +191,7 @@ if(HEADLESS){
   window.addEventListener("message",function(e){
     if(!e.data||typeof e.data!=="object")return;
     // Parent sends model selection — start loading
-    if(e.data.type==="set-model"&&!engine){
-      MODEL=e.data.model;
-      run();
-    }
+    if(e.data.type==="set-model"){if(!engine){MODEL=e.data.model;run();}else{status("Switching...","",0);engine.unload();engine=null;MODEL=e.data.model;MODEL_LABEL=MODEL_NAMES[MODEL]||MODEL;run();}return;}
     // Parent sends memory from Nostr
     if(e.data.type==="load-memory"){
       loadNostrMemory(e.data.entries);
