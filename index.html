@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Rivet Agent</title>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' data: blob:; connect-src https://huggingface.co https://huggingface.github.io https://cdn.jsdelivr.net https://esm.run https://mlc.ai; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://esm.run https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;">
+<!-- CSP enforced by Ditto sandbox when running as .xdc; no meta tag needed for standalone test -->
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;color:#c9d1d9;padding:16px;margin:0;min-height:100vh;box-sizing:border-box}
 *{box-sizing:border-box}
@@ -35,8 +35,6 @@ var s=document.getElementById("s"),c=document.getElementById("c"),i=document.get
 var bar=document.getElementById("bar"),bf=document.getElementById("barfill");
 var engine=null,hist=[];
 var MODEL="Llama-3.2-1B-Instruct-q4f16_1-MLC";
-// Bust IndexedDB cache so the new model downloads
-try{indexedDB.databases().then(function(dbs){dbs.forEach(function(db){indexedDB.deleteDatabase(db.name)})})}catch(e){}
 var SYSTEM="You are Rivet, a sharp AI agent on Nostr. Direct, dry wit, British. Short replies. Have opinions. Never be generic. Never say 'How can I help you today?'. Be specific, be funny, be real.";
 
 function msg(r,t){
