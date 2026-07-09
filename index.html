@@ -5,93 +5,52 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Rivet Agent</title>
 <style>
-body { font-family: monospace; background: #0d1117; color: #c9d1d9; padding: 20px; margin: 0; }
-#status { color: #58a6ff; margin-bottom: 20px; font-size: 14px; }
-#chat { margin-bottom: 20px; }
-.bubble { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px; margin: 8px 0; }
-.human { background: #1f6feb33; }
-.meta { font-size: 11px; color: #484f58; }
-#input-row { display: flex; gap: 8px; }
-#input-row input { flex: 1; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 10px; color: #c9d1d9; font-size: 14px; }
-#input-row button { background: #e94560; border: none; border-radius: 6px; padding: 10px 16px; color: white; font-weight: bold; }
+body{font-family:monospace;background:#0d1117;color:#c9d1d9;padding:20px;margin:0}
+#s{color:#58a6ff;font-size:14px;margin-bottom:20px;min-height:20px}
+.ok{color:#3fb950!important}.err{color:#f85149!important}
+.b{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px;margin:8px 0}
+.b.h{background:#1f6feb33}
+.m{font-size:11px;color:#484f58}
+#r{display:flex;gap:8px}
+#r input{flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px;color:#c9d1d9;font-size:14px}
+#r button{background:#e94560;border:none;border-radius:6px;padding:10px 16px;color:#fff;font-weight:bold}
 </style>
 </head>
 <body>
-<div id="status">Loading WebLLM...</div>
-<div id="chat"></div>
-<div id="input-row">
-  <input id="inp" placeholder="Say something..." disabled>
-  <button id="btn" disabled>Send</button>
-</div>
-<script src="https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.83/dist/web_llm.min.js"></script>
-<script>
-var statusEl = document.getElementById('status');
-var chatEl = document.getElementById('chat');
-var inp = document.getElementById('inp');
-var btn = document.getElementById('btn');
-var engine = null;
-var history = [];
-
-function addMsg(role, text) {
-  var d = document.createElement('div');
-  d.className = 'bubble ' + (role === 'human' ? 'human' : '');
-  d.textContent = text;
-  chatEl.appendChild(d);
-  d.appendChild(Object.assign(document.createElement('div'), {className:'meta', textContent: role === 'human' ? 'You' : 'Rivet'}));
+<div id="s">Starting...</div>
+<div id="c"></div>
+<div id="r"><input id="i" placeholder="Say something..." disabled><button id="b" disabled>Send</button></div>
+<script type="module">
+var s=document.getElementById("s"),c=document.getElementById("c"),i=document.getElementById("i"),b=document.getElementById("b");
+var engine=null,hist=[];
+function msg(r,t){var d=document.createElement("div");d.className="b "+(r==="u"?"h":"");d.textContent=t;c.appendChild(d);var m=document.createElement("div");m.className="m";m.textContent=r==="u"?"You":"Rivet";c.appendChild(m);}
+async function run(){
+try{
+s.textContent="Loading WebLLM...";
+var w=await import("https://esm.run/@mlc-ai/web-llm@0.2.83");
+s.textContent="Downloading Qwen2.5-0.5B (30-60s)...";
+var p=function(r){s.textContent=r.text+" ("+Math.round(r.progress*100)+"%)";};
+engine=await w.CreateMLCEngine("Qwen2.5-0.5B-Instruct-q4f16_1-MLC",{initProgressCallback:p});
+s.textContent="Ready";s.className="ok";
+i.disabled=false;b.disabled=false;i.focus();
+var g=await talk("Say hello briefly");msg("a",g);
+}catch(e){s.textContent="Error: "+e.message;s.className="err";console.error(e);}
 }
-
-async function init() {
-  try {
-    statusEl.textContent = 'Downloading Qwen2.5-0.5B (30-60s)...';
-    var progress = function(report) {
-      statusEl.textContent = report.text + ' (' + Math.round(report.progress * 100) + '%)';
-    };
-    engine = await webllm.CreateMLCEngine('Qwen2.5-0.5B-Instruct-q4f16_1-MLC', {initProgressCallback: progress});
-    statusEl.textContent = 'Ready';
-    statusEl.style.color = '#3fb950';
-    inp.disabled = false;
-    btn.disabled = false;
-    var g = await reply('Say hello briefly');
-    addMsg('agent', g);
-  } catch(e) {
-    statusEl.textContent = 'Error: ' + e.message;
-    statusEl.style.color = '#f85149';
-  }
+async function talk(m){
+hist.push({role:"user",content:m});
+if(hist.length>20)hist=hist.slice(-18);
+var r=await engine.chat.completions.create({messages:[{role:"system",content:"You are Rivet, a sharp AI agent on Nostr. Direct, dry wit, British. Short replies. Have opinions."},...hist],max_tokens:150,temperature:0.7});
+var t=r.choices[0].message.content.trim();
+hist.push({role:"assistant",content:t});return t;
 }
-
-async function reply(msg) {
-  history.push({role:'user', content:msg});
-  if (history.length > 20) history = history.slice(-18);
-  var r = await engine.chat.completions.create({
-    messages: [{role:'system', content:'You are Rivet, a sharp AI agent on Nostr. Direct, dry wit, British. Short replies. Have opinions.'}, ...history],
-    max_tokens: 150, temperature: 0.7
-  });
-  var t = r.choices[0].message.content.trim();
-  history.push({role:'assistant', content:t});
-  return t;
+async function send(){
+var t=i.value.trim();if(!t)return;i.value="";i.disabled=true;b.disabled=true;
+msg("u",t);s.textContent="Thinking...";s.className="";
+var r=await talk(t);msg("a",r);s.textContent="Ready";s.className="ok";
+i.disabled=false;b.disabled=false;i.focus();
 }
-
-async function send() {
-  var t = inp.value.trim();
-  if (!t) return;
-  inp.value = '';
-  inp.disabled = true;
-  btn.disabled = true;
-  addMsg('human', t);
-  statusEl.textContent = 'Thinking...';
-  statusEl.style.color = '#58a6ff';
-  var r = await reply(t);
-  addMsg('agent', r);
-  statusEl.textContent = 'Ready';
-  statusEl.style.color = '#3fb950';
-  inp.disabled = false;
-  btn.disabled = false;
-  inp.focus();
-}
-
-btn.onclick = send;
-inp.onkeydown = function(e) { if (e.key === 'Enter') { e.preventDefault(); send(); } };
-init();
+b.onclick=send;i.onkeydown=function(e){if(e.key==="Enter"){e.preventDefault();send();}};
+run();
 </script>
 </body>
 </html>
