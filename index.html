@@ -51,7 +51,7 @@ var SEED=[
   {role:"user",content:"How are you?"},{role:"assistant",content:"Running. That's about all I can confirm right now."}
 ];
 
-var GENERIC=[/how can i help/i,/i'm here to assist/i,/feel free to ask/i,/please let me know/i,/don't hesitate/i,/i'm designed to/i,/i can provide/i,/i'm always here/i,/what would you like/i,/is there anything/i,/how may i assist/i,/let me know if/i,/i'm happy to help/i,/i can assist/i,/would you like me to/i,/can i help/i,/how can we/i,/what can i do/i];
+var GENERIC=[/how can i help/i,/how can i assist/i,/i'm here to assist/i,/feel free to ask/i,/please let me know/i,/don't hesitate/i,/i'm designed to/i,/i can provide/i,/i'm always here/i,/what would you like/i,/is there anything/i,/how may i assist/i,/let me know if/i,/i'm happy to help/i,/i can assist/i,/would you like me to/i,/can i help/i,/how can we/i,/what can i do/i,/i'm here to help/i];
 function isGeneric(t){return GENERIC.some(function(r){return r.test(t)});}
 
 var HEADLESS=false;
@@ -102,8 +102,8 @@ function buildMemoryText(){
 
 function extractFacts(text){
   var facts=[];
-  var nameMatch=text.match(/my name is (\w+)/i);
-  if(nameMatch)facts.push({key:"fact:user-name",value:nameMatch[1]});
+  var nameMatch=text.match(/my name is (\w+)/i)||text.match(/i\'?(?:'m| am) (\w+)/i);
+  if(nameMatch&&nameMatch[1]){var n=nameMatch[1].toLowerCase();if(n!=="a"&&n!=="the"&&n!=="i"&&n!=="here"&&n!=="doing"&&n!=="from")facts.push({key:"fact:user-name",value:nameMatch[1]});}
   var likeMatch=text.match(/i (?:really )?(?:love|like|enjoy|prefer) (.+?)(?:\.|!|$)/i);
   if(likeMatch)facts.push({key:"fact:likes-"+Date.now(),value:"User likes "+likeMatch[1].trim()});
   var locMatch=text.match(/i(?:'m| am) (?:from|in|based in) (.+?)(?:\.|!|$)/i);
