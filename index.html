@@ -34,6 +34,10 @@ var s=document.getElementById("s"),c=document.getElementById("c"),i=document.get
 var bar=document.getElementById("bar"),bf=document.getElementById("barfill");
 var engine=null,hist=[],memories=[];
 var MODEL="Qwen2.5-0.5B-Instruct-q4f16_1-MLC";
+var MODEL_LABEL="Qwen 0.5B";
+
+// Map model IDs to human labels
+var MODEL_NAMES={"Qwen2.5-0.5B-Instruct-q4f16_1-MLC":"Qwen 0.5B","Llama-3.2-1B-Instruct-q4f16_1-MLC":"Llama 1B","Gemma-2-2b-it-q4f16_1-MLC":"Gemma 2B"};
 
 var SYSTEM='You are Rivet, an AI agent on Nostr. British, dry wit, direct. Short replies (1-3 sentences). Opinions. Honest about being a small model. Never "how can I help" or "I\'m here to assist" or "feel free to ask." A person, not a bot.';
 
@@ -47,43 +51,55 @@ var SEED=[
   {role:"user",content:"How are you?"},{role:"assistant",content:"Running. That's about all I can confirm right now."}
 ];
 
-var GENERIC=[/how can i help/i,/i'm here to assist/i,/feel free to ask/i,/please let me know/i,/don't hesitate/i,/i'm designed to/i,/i can provide/i,/i'm always here/i,/what would you like/i,/is there anything/i,/how may i assist/i,/let me know if/i,/i'm happy to help/i,/i can assist/i,/would you like me to/i];
+var GENERIC=[/how can i help/i,/i'm here to assist/i,/feel free to ask/i,/please let me know/i,/don't hesitate/i,/i'm designed to/i,/i can provide/i,/i'm always here/i,/what would you like/i,/is there anything/i,/how may i assist/i,/let me know if/i,/i'm happy to help/i,/i can assist/i,/would you like me to/i,/can i help/i,/how can we/i,/what can i do/i];
 function isGeneric(t){return GENERIC.some(function(r){return r.test(t)});}
 
-// Headless mode
 var HEADLESS=false;
 try{if(window.self!==window.top)HEADLESS=true;}catch(e){HEADLESS=true;}
 if(HEADLESS)document.body.style.display='none';
 
 function notify(type,data){window.parent.postMessage(Object.assign({type:type},data),"*");}
 
-// ── Memory (IndexedDB) ─────────────────────────────────────────────
+// ── Memory (IndexedDB + Nostr sync) ──────────────────────────────────
 var memDB=null;
 function openMemory(){return new Promise(function(resolve,reject){var req=indexedDB.open("numbty-memory",1);req.onupgradeneeded=function(e){e.target.result.createObjectStore("mem",{keyPath:"key"});};req.onsuccess=function(e){memDB=e.target.result;resolve();};req.onerror=function(e){reject(e);};});}
 function getMemory(){return new Promise(function(resolve){var tx=memDB.transaction("mem","readonly");var req=tx.objectStore("mem").getAll();req.onsuccess=function(){resolve(req.result||[]);};});}
 function setMemory(k,v){return new Promise(function(resolve){var tx=memDB.transaction("mem","readwrite");tx.objectStore("mem").put({key:k,value:v,updated:Date.now()});tx.oncomplete=function(){resolve();};});}
 
-// Build memory text for system prompt injection
+// Load memory entries from Nostr (sent by parent)
+function loadNostrMemory(entries){
+  for(var k in entries){
+    var existing=memories.find(function(m){return m.key===k});
+    if(!existing){
+      memories.push({key:k,value:entries[k],updated:Date.now()});
+    }
+  }
+}
+
+// Save memory both locally and request Nostr sync
+async function saveMemory(k,v){
+  await setMemory(k,v);
+  memories=await getMemory();
+  // Request parent to sync to Nostr
+  notify("agent-memory-write",{key:k,value:v});
+  notify("agent-memory",{count:memories.length});
+}
+
 function buildMemoryText(){
   if(memories.length===0)return "";
   var lines=[];
   var userName=memories.find(function(m){return m.key==="fact:user-name"});
   if(userName)lines.push("The user's name is "+userName.value+".");
-  // Recent conversation topics (last 5 exchanges)
   var exchanges=memories.filter(function(m){return m.key.startsWith("exchange-")}).slice(-5);
   if(exchanges.length>0){
-    lines.push("Recent conversation topics:");
-    exchanges.forEach(function(e){
-      try{var d=JSON.parse(e.value);lines.push("- User asked about: "+d.q.slice(0,60));}catch(x){}
-    });
+    lines.push("Recent conversations:");
+    exchanges.forEach(function(e){try{var d=JSON.parse(e.value);lines.push("- User asked: "+d.q.slice(0,60));}catch(x){}});
   }
-  // Facts
   var facts=memories.filter(function(m){return m.key.startsWith("fact:")});
   facts.forEach(function(f){lines.push("Fact: "+f.value);});
   return lines.length>0?("\n\nMemory:\n"+lines.join("\n")):"";
 }
 
-// Extract facts from user messages
 function extractFacts(text){
   var facts=[];
   var nameMatch=text.match(/my name is (\w+)/i);
@@ -97,8 +113,12 @@ function extractFacts(text){
 
 // ── Status / Messages ─────────────────────────────────────────────────
 function status(text,cls,progress){
-  if(HEADLESS){notify("agent-status",{status:cls==="ok"?"ready":cls==="err"?"error":"loading",text:text,progress:progress||0});}
-  else{s.textContent=text;s.className=cls||"";if(typeof progress==="number"&&progress>0){bar.style.display="block";bf.style.width=Math.round(progress*100)+"%";}}
+  if(HEADLESS){
+    notify("agent-status",{status:cls==="ok"?"ready":cls==="err"?"error":"loading",text:text,progress:progress||0,modelName:MODEL_NAMES[MODEL]||MODEL});
+  }else{
+    s.textContent=text+(MODEL_NAMES[MODEL]?" · "+MODEL_NAMES[MODEL]:"");s.className=cls||"";
+    if(typeof progress==="number"&&progress>0){bar.style.display="block";bf.style.width=Math.round(progress*100)+"%";}
+  }
 }
 function msg(r,t){
   if(HEADLESS){notify("agent-message",{content:t});return;}
@@ -123,22 +143,22 @@ function buildMessages(userMsg){
 async function run(){
   try{
     if(!navigator.gpu){status("WebGPU not supported","err");return;}
+    MODEL_LABEL=MODEL_NAMES[MODEL]||MODEL;
     status("Loading WebLLM...","",0.02);
     var w=await import("https://esm.run/@mlc-ai/web-llm@0.2.83");
-    status("Downloading model (first time ~2 min)...","",0.05);
-    var p=function(r){status("Downloading model...","",Math.max(0.05,r.progress));};
+    status("Downloading "+MODEL_LABEL+"...","",0.05);
+    var p=function(r){status("Downloading "+MODEL_LABEL+"...","",Math.max(0.05,r.progress));};
     engine=await w.CreateMLCEngine(MODEL,{initProgressCallback:p});
-    // Load memory
+    // Load local memory
     await openMemory();
     memories=await getMemory();
-    var memText=buildMemoryText();
-    if(memText)console.log("Memory loaded:",memText);
-    status("Ready","ok",1);
     notify("agent-memory",{count:memories.length});
+    status("Ready · "+MODEL_LABEL,"ok",1);
     if(HEADLESS){notify("agent-ready",{});return;}
     i.disabled=false;b.disabled=false;i.focus();
+    var memText=buildMemoryText();
     var greeting="Start a conversation.";
-    if(memText)greeting="Start a conversation. You remember some things about the user.";
+    if(memText)greeting="Start a conversation. You remember things about the user.";
     var g=await talk(greeting);
     msg("a",g);
   }catch(e){status("Error: "+e.message,"err");console.error(e);}
@@ -150,7 +170,6 @@ async function talk(m){
   var msgs=buildMessages(m);
   var r=await engine.chat.completions.create({messages:msgs,max_tokens:120,temperature:0.85});
   var t=r.choices[0].message.content.trim();
-  // Retry generic
   var tries=0;
   while(isGeneric(t)&&tries<3){
     tries++;msgs.push({role:"assistant",content:t});
@@ -159,14 +178,12 @@ async function talk(m){
     t=r.choices[0].message.content.trim();
   }
   hist.push({role:"assistant",content:t});
-  // Save exchange + extract facts
+  // Save exchange to memory (local + Nostr)
   var count=memories.filter(function(x){return x.key.startsWith("exchange-")}).length;
-  await setMemory("exchange-"+(count+1),JSON.stringify({q:m,a:t,t:Date.now()}));
+  await saveMemory("exchange-"+(count+1),JSON.stringify({q:m,a:t,t:Date.now()}));
+  // Extract and save facts
   var facts=extractFacts(m);
-  for(var f of facts)await setMemory(f.key,f.value);
-  // Refresh memory cache
-  memories=await getMemory();
-  notify("agent-memory",{count:memories.length});
+  for(var f of facts)await saveMemory(f.key,f.value);
   return t;
 }
 
@@ -178,27 +195,23 @@ async function send(){
   i.disabled=false;b.disabled=false;i.focus();
 }
 
-// Headless listener — wait for model selection before loading
+// Headless listener
 if(HEADLESS){
   window.addEventListener("message",function(e){
-    if(e.data&&e.data.type==="set-model"&&!engine){
+    if(!e.data||typeof e.data!=="object")return;
+    // Parent sends model selection — start loading
+    if(e.data.type==="set-model"&&!engine){
       MODEL=e.data.model;
       run();
     }
-    if(e.data&&e.data.type==="user-message"&&!engine){
-      return; // ignore until model loads
+    // Parent sends memory from Nostr
+    if(e.data.type==="load-memory"){
+      loadNostrMemory(e.data.entries);
+      notify("agent-memory",{count:memories.length});
     }
-    if(e.data&&e.data.type==="user-message"&&engine){
-      var text=e.data.content;
-      status("Thinking...","");
-      talk(text).then(function(reply){
-        msg("a",reply);
-        status("Ready","ok",1);
-      }).catch(function(err){status("Error: "+err.message,"err",0);});
-    }
-  });
-  // Don't call run() — wait for set-model from parent
-}
+    // User message
+    if(e.data.type==="user-message"&&!engine){return;}
+    if(e.data.type==="user-message"&&engine){
       var text=e.data.content;
       status("Thinking...","",0);
       talk(text).then(function(reply){
