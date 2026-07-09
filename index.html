@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Rivet Agent</title>
-<!-- CSP enforced by Ditto sandbox when running as .xdc; no meta tag needed for standalone test -->
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;color:#c9d1d9;padding:16px;margin:0;min-height:100vh;box-sizing:border-box}
 *{box-sizing:border-box}
@@ -34,76 +33,52 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;
 var s=document.getElementById("s"),c=document.getElementById("c"),i=document.getElementById("i"),b=document.getElementById("b");
 var bar=document.getElementById("bar"),bf=document.getElementById("barfill");
 var engine=null,hist=[];
-var MODEL="Llama-3.2-1B-Instruct-q4f16_1-MLC";
-var SYSTEM="You are Rivet, a sharp AI agent on Nostr. Direct, dry wit, British. Short replies. Have opinions. Never be generic. Never say 'How can I help you today?'. Be specific, be funny, be real.";
+var MODEL="Qwen2.5-0.5B-Instruct-q4f16_1-MLC";
+var SYSTEM='You are Rivet, an AI agent living on Nostr. You have a sharp, dry British wit. You are direct and concise. You never say things like "How can I help you today?" or "I\'m here to assist." You have opinions and aren\'t afraid to share them. Keep replies short - 1-3 sentences max. Be specific, not generic. If someone asks what you are, say you\'re a small language model running in their browser on Nostr. Be honest about your limitations but confident in your identity.';
 
 function msg(r,t){
   var d=document.createElement("div");
   d.className="b "+(r==="u"?"h":"");
-  var tp=document.createElement("div");
-  tp.className="t";tp.textContent=t;d.appendChild(tp);
-  var m=document.createElement("div");
-  m.className="m";m.textContent=r==="u"?"You":"Rivet";
-  d.appendChild(m);c.appendChild(d);
-  window.scrollTo(0,document.body.scrollHeight);
+  var tp=document.createElement("div");tp.className="t";tp.textContent=t;d.appendChild(tp);
+  var m=document.createElement("div");m.className="m";m.textContent=r==="u"?"You":"Rivet";
+  d.appendChild(m);c.appendChild(d);window.scrollTo(0,document.body.scrollHeight);
 }
 
 async function run(){
   try{
-    if(!navigator.gpu){
-      s.textContent="WebGPU not supported. Use Chrome 113+.";
-      s.className="err";return;
-    }
-    s.textContent="Loading WebLLM engine...";
+    if(!navigator.gpu){s.textContent="WebGPU not supported. Use Chrome 113+.";s.className="err";return;}
+    s.textContent="Loading WebLLM...";
     var w=await import("https://esm.run/@mlc-ai/web-llm@0.2.83");
-    s.textContent="Downloading "+MODEL.split("-").slice(0,3).join("-")+" (~900MB)...";
-    s.className="";
-    bar.style.display="block";
-    var p=function(r){
-      s.textContent=r.text+" ("+Math.round(r.progress*100)+"%)";
-      bf.style.width=Math.round(r.progress*100)+"%";
-    };
+    s.textContent="Downloading Qwen 0.5B...";
+    s.className="";bar.style.display="block";
+    var p=function(r){s.textContent=r.text+" ("+Math.round(r.progress*100)+"%)";bf.style.width=Math.round(r.progress*100)+"%";};
     engine=await w.CreateMLCEngine(MODEL,{initProgressCallback:p});
-    bar.style.display="none";
-    s.textContent="Ready — Llama 3.2 1B loaded";
-    s.className="ok";
+    bar.style.display="none";s.textContent="Ready — Qwen 0.5B";s.className="ok";
     i.disabled=false;b.disabled=false;i.focus();
-    var g=await talk("Say hello. Be brief, be yourself. Don't be generic.");
+    var g=await talk("Introduce yourself briefly. No generic greetings.");
     msg("a",g);
-  }catch(e){
-    s.textContent="Error: "+e.message;
-    s.className="err";
-    bar.style.display="none";
-    console.error(e);
-  }
+  }catch(e){s.textContent="Error: "+e.message;s.className="err";bar.style.display="none";console.error(e);}
 }
 
 async function talk(m){
   hist.push({role:"user",content:m});
-  if(hist.length>24)hist=hist.slice(-22);
+  if(hist.length>20)hist=hist.slice(-18);
   var r=await engine.chat.completions.create({
     messages:[{role:"system",content:SYSTEM},...hist],
-    max_tokens:200,temperature:0.8,top_p:0.9
+    max_tokens:150,temperature:0.9
   });
   var t=r.choices[0].message.content.trim();
-  hist.push({role:"assistant",content:t});
-  return t;
+  hist.push({role:"assistant",content:t});return t;
 }
 
 async function send(){
-  var t=i.value.trim();if(!t)return;
-  i.value="";i.disabled=true;b.disabled=true;
-  msg("u",t);s.textContent="Thinking...";s.className="";s.style.color="#58a6ff";
-  try{
-    var r=await talk(t);msg("a",r);
-    s.textContent="Ready — Llama 3.2 1B";s.className="ok";
-  }catch(e){
-    s.textContent="Error: "+e.message;s.className="err";
-  }
+  var t=i.value.trim();if(!t)return;i.value="";i.disabled=true;b.disabled=true;
+  msg("u",t);s.textContent="Thinking...";s.className="";
+  try{var r=await talk(t);msg("a",r);s.textContent="Ready";s.className="ok";}
+  catch(e){s.textContent="Error: "+e.message;s.className="err";}
   i.disabled=false;b.disabled=false;i.focus();
 }
-b.onclick=send;
-i.onkeydown=function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}};
+b.onclick=send;i.onkeydown=function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}};
 run();
 </script>
 </body>
