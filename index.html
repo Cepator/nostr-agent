@@ -143,6 +143,7 @@ if(HEADLESS){
         msg("a",reply);
         var mem=await getMemory();
         var count=parseInt(mem.find(function(m){return m.key==="conversation-count"})?.value||"0");
+        await setMemory("exchange-"+(count+1),JSON.stringify({q:text,a:reply,t:Date.now()}));
         await setMemory("conversation-count",String(count+1));
         var nameMatch=text.match(/my name is (\w+)/i);
         if(nameMatch)await setMemory("user-name",nameMatch[1]);
