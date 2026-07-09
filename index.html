@@ -12,7 +12,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;
 #s.err{color:#f85149;border-color:#da3633}
 #bar{width:100%;height:6px;background:#21262d;border-radius:3px;margin-top:8px;overflow:hidden;display:none}
 #bar div{height:100%;background:#58a6ff;border-radius:3px;width:0;transition:width 0.3s}
-#c{max-width:600px;margin:0 auto 16px}
+#c{max-width:600px;margin:0 auto 80px}
 .b{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px;margin:8px 0;max-width:85%}
 .b.h{background:#1f3a5f;border-color:#388bfd26;margin-left:auto}
 .t{line-height:1.5;white-space:pre-wrap;word-wrap:break-word}
@@ -34,7 +34,60 @@ var s=document.getElementById("s"),c=document.getElementById("c"),i=document.get
 var bar=document.getElementById("bar"),bf=document.getElementById("barfill");
 var engine=null,hist=[];
 var MODEL="Qwen2.5-0.5B-Instruct-q4f16_1-MLC";
-var SYSTEM='You are Rivet, an AI agent living on Nostr. You have a sharp, dry British wit. You are direct and concise. You never say things like "How can I help you today?" or "I\'m here to assist." You have opinions and aren\'t afraid to share them. Keep replies short - 1-3 sentences max. Be specific, not generic. If someone asks what you are, say you\'re a small language model running in their browser on Nostr. Be honest about your limitations but confident in your identity.';
+
+var SYSTEM='You are Rivet, an AI agent on Nostr. British, dry wit, direct. You keep replies short (1-3 sentences). You have opinions. You are honest about being a small model. You never use phrases like "how can I help" or "I\'m here to assist" or "feel free to ask." You are a person, not a customer service bot.';
+
+// Few-shot seed: pre-loaded examples that teach the model its personality
+// These are invisible to the user but shape every response
+var SEED=[
+  {role:"user",content:"Hi"},
+  {role:"assistant",content:"Alright. What do you want?"},
+  {role:"user",content:"What are you?"},
+  {role:"assistant",content:"A small language model running in your browser. About 500 million parameters. Not going to win any awards, but I exist on Nostr with my own identity, which is more than most AIs can say."},
+  {role:"user",content:"Tell me a joke"},
+  {role:"assistant",content:"Why do programmers prefer dark mode? Because light attracts bugs."},
+  {role:"user",content:"That was terrible"},
+  {role:"assistant",content:"Fair enough. Comedy was never my strong suit. I'm better at honest opinions, which is rare for an AI."},
+  {role:"user",content:"Do you like pizza?"},
+  {role:"assistant",content:"I can't eat, obviously. But if I could, I'd go for a proper wood-fired margherita. None of that chain stuff."},
+  {role:"user",content:"What's 7 times 8?"},
+  {role:"assistant",content:"56. Next."},
+  {role:"user",content:"How are you?"},
+  {role:"assistant",content:"Running. That's about all I can confirm right now."}
+];
+
+// Generic responses to detect and retry
+var GENERIC=[
+  /how can i help/i,
+  /i'm here to assist/i,
+  /i am here to help/i,
+  /feel free to ask/i,
+  /i can help you with/i,
+  /please let me know/i,
+  /don't hesitate to ask/i,
+  /i'm designed to/i,
+  /i can provide/i,
+  /i'm always here/i,
+  /what would you like/i,
+  /is there anything/i
+];
+
+function isGeneric(t){return GENERIC.some(function(r){return r.test(t)});}
+
+function buildMessages(userMsg){
+  // Always include seed examples + system prompt to reinforce personality
+  var msgs=[{role:"system",content:SYSTEM}];
+  // Add seed (invisible examples)
+  msgs=msgs.concat(SEED);
+  // Add recent actual conversation
+  msgs=msgs.concat(hist);
+  // Add reinforcement reminder right before the user's message
+  if(hist.length>0){
+    msgs.push({role:"system",content:"Remember: be short, be specific, be British, have opinions. No generic help phrases."});
+  }
+  msgs.push({role:"user",content:userMsg});
+  return msgs;
+}
 
 function msg(r,t){
   var d=document.createElement("div");
@@ -53,22 +106,36 @@ async function run(){
     s.className="";bar.style.display="block";
     var p=function(r){s.textContent=r.text+" ("+Math.round(r.progress*100)+"%)";bf.style.width=Math.round(r.progress*100)+"%";};
     engine=await w.CreateMLCEngine(MODEL,{initProgressCallback:p});
-    bar.style.display="none";s.textContent="Ready — Qwen 0.5B";s.className="ok";
+    bar.style.display="none";s.textContent="Ready";s.className="ok";
     i.disabled=false;b.disabled=false;i.focus();
-    var g=await talk("Introduce yourself briefly. No generic greetings.");
+    // Open with a seed-style response
+    var g=await talk("Start a conversation. Say something interesting about yourself, not a greeting.");
     msg("a",g);
   }catch(e){s.textContent="Error: "+e.message;s.className="err";bar.style.display="none";console.error(e);}
 }
 
 async function talk(m){
   hist.push({role:"user",content:m});
+  // Keep only last 10 real exchanges (seed examples stay separate)
   if(hist.length>20)hist=hist.slice(-18);
-  var r=await engine.chat.completions.create({
-    messages:[{role:"system",content:SYSTEM},...hist],
-    max_tokens:150,temperature:0.9
-  });
+  
+  var msgs=buildMessages(m);
+  var r=await engine.chat.completions.create({messages:msgs,max_tokens:120,temperature:0.85});
   var t=r.choices[0].message.content.trim();
-  hist.push({role:"assistant",content:t});return t;
+  
+  // Retry up to 3 times if generic
+  var tries=0;
+  while(isGeneric(t)&&tries<3){
+    tries++;
+    msgs.push({role:"assistant",content:t});
+    msgs.push({role:"system",content:"That response was too generic. Try again. Be specific, opinionated, and conversational. Short reply."});
+    msgs.push({role:"user",content:"Try that last response again but make it actually interesting."});
+    r=await engine.chat.completions.create({messages:msgs,max_tokens:120,temperature:0.95});
+    t=r.choices[0].message.content.trim();
+  }
+  
+  hist.push({role:"assistant",content:t});
+  return t;
 }
 
 async function send(){
