@@ -4,52 +4,106 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Rivet Agent</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' data: blob:; connect-src https://huggingface.co https://huggingface.github.io https://cdn.jsdelivr.net https://esm.run https://mlc.ai; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://esm.run https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;">
 <style>
-body{font-family:monospace;background:#0d1117;color:#c9d1d9;padding:20px;margin:0}
-#s{color:#58a6ff;font-size:14px;margin-bottom:20px;min-height:20px}
-.ok{color:#3fb950!important}.err{color:#f85149!important}
-.b{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px;margin:8px 0}
-.b.h{background:#1f6feb33}
-.m{font-size:11px;color:#484f58}
-#r{display:flex;gap:8px}
-#r input{flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px;color:#c9d1d9;font-size:14px}
-#r button{background:#e94560;border:none;border-radius:6px;padding:10px 16px;color:#fff;font-weight:bold}
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;color:#c9d1d9;padding:16px;margin:0;min-height:100vh;box-sizing:border-box}
+*{box-sizing:border-box}
+#s{color:#58a6ff;font-size:14px;margin-bottom:16px;min-height:20px;padding:12px;background:#161b22;border-radius:8px;border:1px solid #30363d}
+#s.ok{color:#3fb950;border-color:#238636}
+#s.err{color:#f85149;border-color:#da3633}
+#bar{width:100%;height:6px;background:#21262d;border-radius:3px;margin-top:8px;overflow:hidden;display:none}
+#bar div{height:100%;background:#58a6ff;border-radius:3px;width:0;transition:width 0.3s}
+#c{max-width:600px;margin:0 auto 16px}
+.b{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px;margin:8px 0;max-width:85%}
+.b.h{background:#1f3a5f;border-color:#388bfd26;margin-left:auto}
+.t{line-height:1.5;white-space:pre-wrap;word-wrap:break-word}
+.m{font-size:11px;color:#484f58;margin-top:6px}
+#r{display:flex;gap:8px;max-width:600px;margin:0 auto;position:fixed;bottom:0;left:0;right:0;padding:12px 16px;background:#0d1117;border-top:1px solid #30363d}
+#r input{flex:1;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 14px;color:#c9d1d9;font-size:15px;outline:none}
+#r input:focus{border-color:#58a6ff}
+#r button{background:#e94560;border:none;border-radius:8px;padding:10px 18px;color:#fff;font-weight:600;cursor:pointer;font-size:15px}
+#r button:disabled{opacity:0.4;cursor:default}
 </style>
 </head>
 <body>
 <div id="s">Starting...</div>
+<div id="bar"><div id="barfill"></div></div>
 <div id="c"></div>
-<div id="r"><input id="i" placeholder="Say something..." disabled><button id="b" disabled>Send</button></div>
+<div id="r"><input id="i" placeholder="Say something..." autocomplete="off"><button id="b">Send</button></div>
 <script type="module">
 var s=document.getElementById("s"),c=document.getElementById("c"),i=document.getElementById("i"),b=document.getElementById("b");
+var bar=document.getElementById("bar"),bf=document.getElementById("barfill");
 var engine=null,hist=[];
-function msg(r,t){var d=document.createElement("div");d.className="b "+(r==="u"?"h":"");d.textContent=t;c.appendChild(d);var m=document.createElement("div");m.className="m";m.textContent=r==="u"?"You":"Rivet";c.appendChild(m);}
+var MODEL="Llama-3.2-1B-Instruct-q4f16_1-MLC";
+var SYSTEM="You are Rivet, a sharp AI agent on Nostr. Direct, dry wit, British. Short replies. Have opinions. Never be generic. Never say 'How can I help you today?'. Be specific, be funny, be real.";
+
+function msg(r,t){
+  var d=document.createElement("div");
+  d.className="b "+(r==="u"?"h":"");
+  var tp=document.createElement("div");
+  tp.className="t";tp.textContent=t;d.appendChild(tp);
+  var m=document.createElement("div");
+  m.className="m";m.textContent=r==="u"?"You":"Rivet";
+  d.appendChild(m);c.appendChild(d);
+  window.scrollTo(0,document.body.scrollHeight);
+}
+
 async function run(){
-try{
-s.textContent="Loading WebLLM...";
-var w=await import("https://esm.run/@mlc-ai/web-llm@0.2.83");
-s.textContent="Downloading Qwen2.5-0.5B (30-60s)...";
-var p=function(r){s.textContent=r.text+" ("+Math.round(r.progress*100)+"%)";};
-engine=await w.CreateMLCEngine("Qwen2.5-0.5B-Instruct-q4f16_1-MLC",{initProgressCallback:p});
-s.textContent="Ready";s.className="ok";
-i.disabled=false;b.disabled=false;i.focus();
-var g=await talk("Say hello briefly");msg("a",g);
-}catch(e){s.textContent="Error: "+e.message;s.className="err";console.error(e);}
+  try{
+    if(!navigator.gpu){
+      s.textContent="WebGPU not supported. Use Chrome 113+.";
+      s.className="err";return;
+    }
+    s.textContent="Loading WebLLM engine...";
+    var w=await import("https://esm.run/@mlc-ai/web-llm@0.2.83");
+    s.textContent="Downloading "+MODEL.split("-").slice(0,3).join("-")+" (~900MB)...";
+    s.className="";
+    bar.style.display="block";
+    var p=function(r){
+      s.textContent=r.text+" ("+Math.round(r.progress*100)+"%)";
+      bf.style.width=Math.round(r.progress*100)+"%";
+    };
+    engine=await w.CreateMLCEngine(MODEL,{initProgressCallback:p});
+    bar.style.display="none";
+    s.textContent="Ready — Llama 3.2 1B loaded";
+    s.className="ok";
+    i.disabled=false;b.disabled=false;i.focus();
+    var g=await talk("Say hello. Be brief, be yourself. Don't be generic.");
+    msg("a",g);
+  }catch(e){
+    s.textContent="Error: "+e.message;
+    s.className="err";
+    bar.style.display="none";
+    console.error(e);
+  }
 }
+
 async function talk(m){
-hist.push({role:"user",content:m});
-if(hist.length>20)hist=hist.slice(-18);
-var r=await engine.chat.completions.create({messages:[{role:"system",content:"You are Rivet, a sharp AI agent on Nostr. Direct, dry wit, British. Short replies. Have opinions."},...hist],max_tokens:150,temperature:0.7});
-var t=r.choices[0].message.content.trim();
-hist.push({role:"assistant",content:t});return t;
+  hist.push({role:"user",content:m});
+  if(hist.length>24)hist=hist.slice(-22);
+  var r=await engine.chat.completions.create({
+    messages:[{role:"system",content:SYSTEM},...hist],
+    max_tokens:200,temperature:0.8,top_p:0.9
+  });
+  var t=r.choices[0].message.content.trim();
+  hist.push({role:"assistant",content:t});
+  return t;
 }
+
 async function send(){
-var t=i.value.trim();if(!t)return;i.value="";i.disabled=true;b.disabled=true;
-msg("u",t);s.textContent="Thinking...";s.className="";
-var r=await talk(t);msg("a",r);s.textContent="Ready";s.className="ok";
-i.disabled=false;b.disabled=false;i.focus();
+  var t=i.value.trim();if(!t)return;
+  i.value="";i.disabled=true;b.disabled=true;
+  msg("u",t);s.textContent="Thinking...";s.className="";s.style.color="#58a6ff";
+  try{
+    var r=await talk(t);msg("a",r);
+    s.textContent="Ready — Llama 3.2 1B";s.className="ok";
+  }catch(e){
+    s.textContent="Error: "+e.message;s.className="err";
+  }
+  i.disabled=false;b.disabled=false;i.focus();
 }
-b.onclick=send;i.onkeydown=function(e){if(e.key==="Enter"){e.preventDefault();send();}};
+b.onclick=send;
+i.onkeydown=function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}};
 run();
 </script>
 </body>
