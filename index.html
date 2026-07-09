@@ -81,7 +81,7 @@ function buildMessages(userMsg){
   var msgs=[{role:"system",content:SYSTEM}];
   msgs=msgs.concat(SEED);
   msgs=msgs.concat(hist);
-  if(hist.length>0)msgs.push({role:"system",content:"Remember: be short, be specific, be British, have opinions. No generic help phrases."});
+  if(hist.length>0)msgs.push({role:"user",content:"Be short, specific, British, have opinions. No generic help phrases."});
   msgs.push({role:"user",content:userMsg});
   return msgs;
 }
@@ -111,8 +111,7 @@ async function talk(m){
   var tries=0;
   while(isGeneric(t)&&tries<3){
     tries++;msgs.push({role:"assistant",content:t});
-    msgs.push({role:"system",content:"Too generic. Be specific."});
-    msgs.push({role:"user",content:"Try again, make it interesting."});
+    msgs.push({role:"user",content:"That was too generic. Try again and be specific, opinionated, conversational."});
     r=await engine.chat.completions.create({messages:msgs,max_tokens:120,temperature:0.95});
     t=r.choices[0].message.content.trim();
   }
