@@ -181,6 +181,7 @@ async function send(){
 // Headless listener
 if(HEADLESS){
   window.addEventListener("message",function(e){
+    if(e.data&&e.data.type==="set-model"&&!engine){MODEL=e.data.model;}
     if(e.data&&e.data.type==="user-message"){
       var text=e.data.content;
       status("Thinking...","",0);
