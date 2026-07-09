@@ -178,11 +178,27 @@ async function send(){
   i.disabled=false;b.disabled=false;i.focus();
 }
 
-// Headless listener
+// Headless listener — wait for model selection before loading
 if(HEADLESS){
   window.addEventListener("message",function(e){
-    if(e.data&&e.data.type==="set-model"&&!engine){MODEL=e.data.model;}
-    if(e.data&&e.data.type==="user-message"){
+    if(e.data&&e.data.type==="set-model"&&!engine){
+      MODEL=e.data.model;
+      run();
+    }
+    if(e.data&&e.data.type==="user-message"&&!engine){
+      return; // ignore until model loads
+    }
+    if(e.data&&e.data.type==="user-message"&&engine){
+      var text=e.data.content;
+      status("Thinking...","");
+      talk(text).then(function(reply){
+        msg("a",reply);
+        status("Ready","ok",1);
+      }).catch(function(err){status("Error: "+err.message,"err",0);});
+    }
+  });
+  // Don't call run() — wait for set-model from parent
+}
       var text=e.data.content;
       status("Thinking...","",0);
       talk(text).then(function(reply){
@@ -195,8 +211,8 @@ if(HEADLESS){
 
 if(!HEADLESS){
   b.onclick=send;i.onkeydown=function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}};
+  run();
 }
-run();
 </script>
 </body>
 </html>
