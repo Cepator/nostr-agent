@@ -57,13 +57,42 @@ if(HEADLESS)document.body.style.display='none';
 
 function notify(type,data){window.parent.postMessage(Object.assign({type:type},data),"*");}
 
+// ── JSON-RPC Bridge (for nostr operations via host) ─────────────────
+var bridgeNextId=1;
+var bridgePending={};
+
+function bridgeRpc(method,params){
+  return new Promise(function(resolve,reject){
+    var id=bridgeNextId++;
+    bridgePending[id]={resolve:resolve,reject:reject};
+    window.parent.postMessage({jsonrpc:"2.0",id:id,method:method,params:params},"*");
+  });
+}
+
+function bridgeInit(){
+  window.addEventListener("message",function(e){
+    var d=e.data;
+    if(!d||typeof d!=="object")return;
+    // JSON-RPC response from host
+    if(d.jsonrpc==="2.0"&&d.id!==undefined&&!d.method){
+      var p=bridgePending[d.id];
+      if(p){
+        delete bridgePending[d.id];
+        if(d.error){p.reject(new Error(d.error.message));}else{p.resolve(d.result);}
+      }
+      return;
+    }
+  });
+}
+bridgeInit();
+
 // ── Memory (IndexedDB + Nostr sync) ──────────────────────────────────
 var memDB=null;
 function openMemory(){return new Promise(function(resolve,reject){var req=indexedDB.open("numbty-memory",1);req.onupgradeneeded=function(e){e.target.result.createObjectStore("mem",{keyPath:"key"});};req.onsuccess=function(e){memDB=e.target.result;resolve();};req.onerror=function(e){reject(e);};});}
 function getMemory(){return new Promise(function(resolve){var tx=memDB.transaction("mem","readonly");var req=tx.objectStore("mem").getAll();req.onsuccess=function(){resolve(req.result||[]);};});}
 function setMemory(k,v){return new Promise(function(resolve){var tx=memDB.transaction("mem","readwrite");tx.objectStore("mem").put({key:k,value:v,updated:Date.now()});tx.oncomplete=function(){resolve();};});}
 
-// Load memory entries from Nostr (sent by parent)
+// Load memory entries from Nostr (sent by parent via load-memory message)
 function loadNostrMemory(entries){
   for(var k in entries){
     var existing=memories.find(function(m){return m.key===k});
@@ -73,12 +102,32 @@ function loadNostrMemory(entries){
   }
 }
 
-// Save memory both locally and request Nostr sync
+// Load memory from Nostr via bridge RPC
+async function loadNostrMemoryViaBridge(){
+  try{
+    var result=await bridgeRpc("nostrBridge.getMemory",{});
+    if(result&&typeof result==="object"){
+      for(var k in result){
+        var existing=memories.find(function(m){return m.key===k});
+        if(!existing){
+          memories.push({key:k,value:result[k],updated:Date.now()});
+        }
+      }
+    }
+  }catch(e){console.error("Failed to load Nostr memory via bridge:",e);}
+}
+
+// Save memory locally and sync to Nostr via bridge RPC
 async function saveMemory(k,v){
   await setMemory(k,v);
   memories=await getMemory();
-  // Request parent to sync to Nostr
-  notify("agent-memory-write",{key:k,value:v});
+  // Try bridge RPC first (proper path), fall back to simple postMessage
+  try{
+    await bridgeRpc("nostrBridge.setMemory",{key:k,value:v});
+  }catch(e){
+    // Fallback: request parent to sync via simple message
+    notify("agent-memory-write",{key:k,value:v});
+  }
   notify("agent-memory",{count:memories.length});
 }
 
@@ -146,6 +195,8 @@ async function run(){
     engine=await w.CreateMLCEngine(MODEL,{initProgressCallback:p});
     await openMemory();
     memories=await getMemory();
+    // Try loading Nostr memory via bridge RPC
+    await loadNostrMemoryViaBridge();
     // Pre-load seeds into history so buildMessages includes them on first turn
     hist=SEED.slice();
     notify("agent-memory",{count:memories.length});
