@@ -1,0 +1,14 @@
+[application]
+name = "Rivet Agent"
+version = "1.0.0"
+license = "MIT"
+
+[application.author]
+name = "Numbties"
+addr = "rivet@numbties.dev"
+
+[application.source_code_url]
+url = "https://github.com/Cepator/nostr-agent"
+
+[application.description]
+short = "AI agent on Nostr with British wit"
