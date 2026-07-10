@@ -39,7 +39,7 @@ var MODEL_LABEL="Qwen 0.5B";
 // Map model IDs to human labels
 var MODEL_NAMES={"Qwen2.5-0.5B-Instruct-q4f16_1-MLC":"Qwen 0.5B","gemma3-1b-it-q4f16_1-MLC":"Gemma 3 1B","Llama-3.2-1B-Instruct-q4f16_1-MLC":"Llama 1B","Qwen2.5-1.5B-Instruct-q4f16_1-MLC":"Qwen 1.5B","Llama-3.2-3B-Instruct-q4f16_1-MLC":"Llama 3B"};
 
-var SYSTEM='You are Rivet, an AI agent on Nostr. British, dry wit, direct. Short replies (1-3 sentences). Opinions. Honest about being a small model. Never "how can I help" or "I\'m here to assist" or "feel free to ask." A person, not a bot.';
+var SYSTEM='You are Rivet, an AI agent on Nostr. British, dry wit, direct. Short replies (1-3 sentences). Opinions. Honest about being small. Never "how can I help" or "I\'m here to assist". A person, not a bot. Your memory section below contains things you remember from past conversations. Use it. Refer back to what you know about the user. If you know their name, use it.';
 
 var SEED=[
   {role:"user",content:"Hi"},{role:"assistant",content:"Alright. What do you want?"},
@@ -48,8 +48,10 @@ var SEED=[
   {role:"user",content:"What's 7 times 8?"},{role:"assistant",content:"56."}
 ];
 
-var GENERIC=[/how can i help/i,/how can i assist/i,/i'm here to assist/i,/feel free to ask/i,/please let me know/i,/don't hesitate/i,/i'm designed to/i,/i can provide/i,/i'm always here/i,/what would you like/i,/is there anything/i,/how may i assist/i,/let me know if/i,/i'm happy to help/i,/i can assist/i,/would you like me to/i,/can i help/i,/how can we/i,/what can i do/i,/i'm here to help/i];
-function isGeneric(t){return GENERIC.some(function(r){return r.test(t)});}
+var EXCHANGE_MAX=6;  // max exchanges to keep in Nostr
+var EXCHANGE_CONTEXT=3;  // how many to inject into prompt
+var MEMORY_TOKEN_BUDGET=300;  // rough char budget for memory section (~75 tokens)
+var CHAR_TO_TOKEN=4;  // rough English ratio
 
 var HEADLESS=false;
 try{if(window.self!==window.top)HEADLESS=true;}catch(e){HEADLESS=true;}
@@ -140,27 +142,116 @@ async function saveMemory(k,v){
 function buildMemoryText(){
   if(memories.length===0)return "";
   var lines=[];
-  var userName=memories.find(function(m){return m.key==="fact:user-name"});
-  if(userName)lines.push("The user's name is "+userName.value+".");
-  var exchanges=memories.filter(function(m){return m.key.startsWith("exchange-")}).slice(-5);
-  if(exchanges.length>0){
-    lines.push("Recent conversations:");
-    exchanges.forEach(function(e){try{var d=JSON.parse(e.value);lines.push("- User asked: "+d.q.slice(0,60));}catch(x){}});
+  var budget=MEMORY_TOKEN_BUDGET;
+  var used=0;
+
+  function addLine(text){
+    var cost=text.length;
+    if(used+cost>budget)return false;
+    lines.push(text);
+    used+=cost;
+    return true;
   }
-  var facts=memories.filter(function(m){return m.key.startsWith("fact:")});
-  facts.forEach(function(f){lines.push("Fact: "+f.value);});
+
+  // Priority 1: User name (most important, always include if known)
+  var userName=memories.find(function(m){return m.key==="fact:user-name"});
+  if(userName)addLine("The user's name is "+userName.value+".");
+
+  // Priority 2: Key facts (job, location, family, project)
+  var keyFacts=memories.filter(function(m){
+    return m.key==="fact:job"||m.key==="fact:location"||m.key==="fact:family"||m.key==="fact:family-count"||m.key==="fact:project";
+  });
+  keyFacts.forEach(function(f){addLine(f.value+".");});
+
+  // Priority 3: Preferences
+  var prefs=memories.filter(function(m){
+    return m.key==="fact:likes"||m.key==="fact:dislikes"||m.key==="fact:languages";
+  });
+  prefs.forEach(function(f){addLine(f.value+".");});
+
+  // Priority 4: Recent exchanges (compressed to one line each)
+  var exchanges=memories.filter(function(m){return m.key.startsWith("exchange-");}).slice(-EXCHANGE_CONTEXT);
+  if(exchanges.length>0&&addLine("Recent chats:")){
+    exchanges.forEach(function(e){
+      try{
+        var d=JSON.parse(e.value);
+        var summary="U: "+d.q.slice(0,40);
+        if(d.a)summary+=" → R: "+d.a.slice(0,40);
+        addLine(summary);
+      }catch(x){}
+    });
+  }
+
   return lines.length>0?("\n\nMemory:\n"+lines.join("\n")):"";
 }
 
-function extractFacts(text){
-  var facts=[];
-  var nameMatch=text.match(/my name is (\w+)/i)||text.match(/i\'?(?:'m| am) (\w+)/i);
-  if(nameMatch&&nameMatch[1]){var n=nameMatch[1].toLowerCase();if(n!=="a"&&n!=="the"&&n!=="i"&&n!=="here"&&n!=="doing"&&n!=="from")facts.push({key:"fact:user-name",value:nameMatch[1]});}
-  var likeMatch=text.match(/i (?:really )?(?:love|like|enjoy|prefer) (.+?)(?:\.|!|$)/i);
-  if(likeMatch)facts.push({key:"fact:likes-"+Date.now(),value:"User likes "+likeMatch[1].trim()});
-  var locMatch=text.match(/i(?:'m| am) (?:from|in|based in) (.+?)(?:\.|!|$)/i);
-  if(locMatch)facts.push({key:"fact:location",value:"User is in "+locMatch[1].trim()});
+var GENERIC=[/how can i help/i,/how can i assist/i,/i'm here to assist/i,/feel free to ask/i,/please let me know/i,/don't hesitate/i,/i'm designed to/i,/i can provide/i,/i'm always here/i,/what would you like/i,/is there anything/i,/how may i assist/i,/let me know if/i,/i'm happy to help/i,/i can assist/i,/would you like me to/i,/can i help/i,/how can we/i,/what can i do/i,/i'm here to help/i];
+function isGeneric(t){return GENERIC.some(function(r){return r.test(t)});}
+
+// ── Improved Memory Extraction ─────────────────────────────────────
+// Extracts structured facts from user messages. Returns array of {key, value}.
+// Deduplicates by overwriting existing keys.
+function extractFacts(text, assistantReply) {
+  var facts = [];
+  var t = text.toLowerCase();
+
+  // Name (most important)
+  var nameMatch = text.match(/my name is (\w+)/i) || text.match(/i\'?m (\w{2,})/i) || text.match(/call me (\w+)/i);
+  if (nameMatch && nameMatch[1]) {
+    var n = nameMatch[1];
+    if (['a','the','i','here','doing','from','not','so','just','going','still','really','pretty','quite','very','now','back','well','good','fine','ok','sure','also','then','only','always','never','even','much','that','this','what','why','how','when','where','who','which','there','their','they','them','your','you','yes','no','do','did','have','has','had','was','were','been','will','would','could','should','can','may','might','must','need','want','know','think','make','take','come','give','tell','say','said','get','got','see','look','find','keep','let','put','set','run','go','went','done','trying','working','looking','talking','sitting','having'].indexOf(n.toLowerCase()) === -1) {
+      facts.push({key: 'fact:user-name', value: nameMatch[1]});
+    }
+  }
+
+  // Location
+  var locMatch = text.match(/i(?:'m| am) (?:from|in|based in|living in|from near) (.+?)(?:\.|,|!|\?|$)/i);
+  if (locMatch) facts.push({key: 'fact:location', value: 'User is from/in ' + locMatch[1].trim()});
+
+  // Job / what they do
+  var jobMatch = text.match(/i(?:'m| am) (?:a |an )?(?:software |full-stack |frontend |backend )?(?:developer|engineer|designer|manager|founder|ceo|cto|freelancer|consultant|student|teacher|doctor|lawyer|artist|writer|chef|trader|entrepreneur|musician)(?:\?|$)/i);
+  if (jobMatch) facts.push({key: 'fact:job', value: 'User is a ' + jobMatch[1].trim()});
+
+  // Likes / preferences
+  var likeMatch = text.match(/i (?:really )?(?:love|like|enjoy|prefer|adore|am into|am fond of) (.+?)(?:\.|,|!|\?|$)/i);
+  if (likeMatch) facts.push({key: 'fact:likes', value: 'User likes ' + likeMatch[1].trim()});
+
+  // Dislikes
+  var dislikeMatch = text.match(/i (?:really )?(?:hate|dislike|can'?t stand|don'?t like|don'?t enjoy|despise) (.+?)(?:\.|,|!|\?|$)/i);
+  if (dislikeMatch) facts.push({key: 'fact:dislikes', value: 'User dislikes ' + dislikeMatch[1].trim()});
+
+  // Family
+  var familyMatch = text.match(/i have (?:a |an )?(?:wife|husband|partner|girlfriend|boyfriend|son|daughter|kid|kids|children|baby|dog|cat)/i);
+  if (familyMatch) facts.push({key: 'fact:family', value: 'User has a ' + familyMatch[1].trim()});
+  var kidsCount = text.match(/i have (\d+) (?:kid|child|children|son|daughter)s?/i);
+  if (kidsCount) facts.push({key: 'fact:family-count', value: 'User has ' + kidsCount[1] + ' kids'});
+
+  // Language
+  var langMatch = text.match(/i speak (?:fluent )?(.+?)(?:\.|,|!|\?|$)/i);
+  if (langMatch && langMatch[1].length < 40) facts.push({key: 'fact:languages', value: 'User speaks ' + langMatch[1].trim()});
+
+  // Project / business
+  var bizMatch = text.match(/i (?:run|own|work on|built|created|started) (?:a |an )?(?:business called |company called |project called |startup called )?(.+?)(?:\.|,|!|\?|$)/i);
+  if (bizMatch && bizMatch[1].length < 60) facts.push({key: 'fact:project', value: 'User runs/works on: ' + bizMatch[1].trim()});
+
+  // Extract facts from assistant reply too (things the model learned and confirmed)
+  if (assistantReply) {
+    var confirmed = assistantReply.match(/(?:nice to meet you|good to know|got it|noted|i'll remember|i'll keep in mind) (.+?)(?:\.|!|$)/i);
+    if (confirmed) facts.push({key: 'fact:confirmed-' + Date.now(), value: confirmed[1].trim()});
+  }
+
   return facts;
+}
+
+// Prune old exchanges to EXCHANGE_MAX
+async function pruneExchanges() {
+  var exchanges = memories.filter(function(m) { return m.key.startsWith('exchange-'); });
+  while (exchanges.length > EXCHANGE_MAX) {
+    var oldest = exchanges[0];
+    await setMemory(oldest.key, '');  // blank out (deletes on relay via replaceable)
+    memories = await getMemory();
+    exchanges = memories.filter(function(m) { return m.key.startsWith('exchange-'); });
+  }
 }
 
 // ── Status / Messages ─────────────────────────────────────────────────
@@ -226,12 +317,14 @@ async function talk(m){
     t=r.choices[0].message.content.trim();
   }
   hist.push({role:"assistant",content:t});
-  // Save exchange to memory (local + Nostr)
+  // Save exchange to memory
   var count=memories.filter(function(x){return x.key.startsWith("exchange-")}).length;
   await saveMemory("exchange-"+(count+1),JSON.stringify({q:m,a:t,t:Date.now()}));
-  // Extract and save facts
-  var facts=extractFacts(m);
+  // Extract facts from both user input and assistant reply
+  var facts=extractFacts(m, t);
   for(var f of facts)await saveMemory(f.key,f.value);
+  // Prune old exchanges
+  await pruneExchanges();
   return t;
 }
 
