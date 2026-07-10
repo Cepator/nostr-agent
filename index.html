@@ -65,6 +65,7 @@ function bridgeRpc(method,params){
   return new Promise(function(resolve,reject){
     var id=bridgeNextId++;
     bridgePending[id]={resolve:resolve,reject:reject};
+    console.log("[agent] bridge →",method,params);
     window.parent.postMessage({jsonrpc:"2.0",id:id,method:method,params:params},"*");
   });
 }
@@ -78,7 +79,7 @@ function bridgeInit(){
       var p=bridgePending[d.id];
       if(p){
         delete bridgePending[d.id];
-        if(d.error){p.reject(new Error(d.error.message));}else{p.resolve(d.result);}
+        if(d.error){console.log("[agent] bridge ← ERROR",d.error);p.reject(new Error(d.error.message));}else{console.log("[agent] bridge ← OK",d.method,d.result);p.resolve(d.result);}
       }
       return;
     }
@@ -105,7 +106,9 @@ function loadNostrMemory(entries){
 // Load memory from Nostr via bridge RPC
 async function loadNostrMemoryViaBridge(){
   try{
+    console.log("[agent] Loading Nostr memory via bridge...");
     var result=await bridgeRpc("nostrBridge.getMemory",{});
+    console.log("[agent] Nostr memory loaded:",result?Object.keys(result).length:0,"entries");
     if(result&&typeof result==="object"){
       for(var k in result){
         var existing=memories.find(function(m){return m.key===k});
@@ -114,7 +117,7 @@ async function loadNostrMemoryViaBridge(){
         }
       }
     }
-  }catch(e){console.error("Failed to load Nostr memory via bridge:",e);}
+  }catch(e){console.error("[agent] Failed to load Nostr memory via bridge:",e);}
 }
 
 // Save memory locally and sync to Nostr via bridge RPC
@@ -123,8 +126,11 @@ async function saveMemory(k,v){
   memories=await getMemory();
   // Try bridge RPC first (proper path), fall back to simple postMessage
   try{
+    console.log("[agent] Writing memory via bridge:",k);
     await bridgeRpc("nostrBridge.setMemory",{key:k,value:v});
+    console.log("[agent] Memory written via bridge:",k);
   }catch(e){
+    console.log("[agent] Bridge write failed, falling back to postMessage:",e);
     // Fallback: request parent to sync via simple message
     notify("agent-memory-write",{key:k,value:v});
   }
