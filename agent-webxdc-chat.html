@@ -100,6 +100,11 @@ if (window.webxdc) {
       setStatus('Ready', 'ready');
       document.getElementById('input').disabled = false;
       document.getElementById('send').disabled = false;
+    } else if (update.payload && update.payload.type === 'error') {
+      addMessage('agent', '⚠️ ' + update.payload.message);
+      setStatus('Error - Try refreshing', 'err');
+      document.getElementById('input').disabled = false;
+      document.getElementById('send').disabled = false;
     }
   });
   
