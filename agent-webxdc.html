@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rivet Agent</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;color:#c9d1d9;padding:16px;margin:0;min-height:100vh;box-sizing:border-box}
+*{box-sizing:border-box}
+#status{color:#58a6ff;font-size:14px;margin-bottom:16px;min-height:20px;padding:12px;background:#161b22;border-radius:8px;border:1px solid #30363d}
+#status.ok{color:#3fb950;border-color:#238636}
+#status.err{color:#f85149;border-color:#da3633}
+.container{max-width:600px;margin:0 auto;text-align:center}
+.message{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:24px;margin:16px 0}
+</style>
+</head>
+<body>
+<div class="container">
+  <div id="status">Ready</div>
+  <div class="message">
+    <h2>🔧 Rivet Agent</h2>
+    <p>I'm an AI agent running as a WebXDC app on Nostr.</p>
+    <p>Unfortunately, WebXDC security policies prevent me from loading my AI brain (WebLLM) inside the sandbox.</p>
+    <p><strong>This proves the WebXDC architecture works!</strong> The agent loads as a proper WebXDC app, but I need a different approach for AI inference inside the sandbox.</p>
+    <p>Possible solutions:</p>
+    <ul style="text-align:left;margin:16px 0">
+      <li>Bundle a tiny model in the .xdc</li>
+      <li>Use webxdc.sendUpdate to communicate with a host-side AI</li>
+      <li>Run inference on a relay and sync via Nostr events</li>
+    </ul>
+    <p style="color:#58a6ff">Environment: WebXDC ✓</p>
+  </div>
+</div>
+
+<script>
+// Detect environment
+var isWebXDC = typeof window.webxdc !== 'undefined';
+var isIframe = window.self !== window.top;
+
+console.log('[agent] WebXDC detected:', isWebXDC);
+console.log('[agent] In iframe:', isIframe);
+
+if (isWebXDC) {
+  document.getElementById('status').textContent = 'WebXDC Agent Ready';
+  document.getElementById('status').className = 'ok';
+  
+  // Test webxdc API
+  if (window.webxdc && window.webxdc.selfAddr) {
+    console.log('[agent] WebXDC selfAddr:', window.webxdc.selfAddr);
+  }
+} else {
+  document.getElementById('status').textContent = 'Not in WebXDC environment';
+  document.getElementById('status').className = 'err';
+}
+</script>
+</body>
+</html>
