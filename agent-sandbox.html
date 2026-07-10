@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rivet Agent</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;color:#c9d1d9;padding:16px;margin:0;min-height:100vh;box-sizing:border-box}
+*{box-sizing:border-box}
+#s{color:#58a6ff;font-size:14px;margin-bottom:16px;min-height:20px;padding:12px;background:#161b22;border-radius:8px;border:1px solid #30363d}
+#s.ok{color:#3fb950;border-color:#238636}
+#s.err{color:#f85149;border-color:#da3633}
+#bar{width:100%;height:6px;background:#21262d;border-radius:3px;margin-top:8px;overflow:hidden;display:none}
+#bar div{height:100%;background:#58a6ff;border-radius:3px;width:0;transition:width 0.3s}
+#c{max-width:600px;margin:0 auto 80px}
+.b{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px;margin:8px 0;max-width:85%}
+.b.h{background:#1f3a5f;border-color:#388bfd26;margin-left:auto}
+.t{line-height:1.5;white-space:pre-wrap;word-wrap:break-word}
+.m{font-size:11px;color:#484f58;margin-top:6px}
+#r{display:flex;gap:8px;max-width:600px;margin:0 auto;position:fixed;bottom:0;left:0;right:0;padding:12px 16px;background:#0d1117;border-top:1px solid #30363d}
+#r input{flex:1;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 14px;color:#c9d1d9;font-size:15px;outline:none}
+#r input:focus{border-color:#58a6ff}
+#r button{background:#e94560;border:none;border-radius:8px;padding:10px 18px;color:#fff;font-weight:600;cursor:pointer;font-size:15px}
+#r button:disabled{opacity:0.4;cursor:default}
+</style>
+</head>
+<body>
+<div id="s">Starting...</div>
+<div id="bar"><div id="barfill"></div></div>
+<div id="c"></div>
+<div id="r"><input id="i" placeholder="Say something..." autocomplete="off"><button id="b">Send</button></div>
+<script type="module">
+// ── Config ───────────────────────────────────────────────────────────
+var s=document.getElementById("s"),c=document.getElementById("c"),i=document.getElementById("i"),b=document.getElementById("b");
+var bar=document.getElementById("bar"),bf=document.getElementById("barfill");
+var engine=null,hist=[],memories=[];
+var MODEL="Qwen2.5-0.5B-Instruct-q4f16_1-MLC";
+var MODEL_LABEL="Qwen 0.5B";
+
+// Map model IDs to human labels
+var MODEL_NAMES={"Qwen2.5-0.5B-Instruct-q4f16_1-MLC":"Qwen 0.5B","gemma3-1b-it-q4f16_1-MLC":"Gemma 3 1B","Llama-3.2-1B-Instruct-q4f16_1-MLC":"Llama 1B","Qwen2.5-1.5B-Instruct-q4f16_1-MLC":"Qwen 1.5B","Llama-3.2-3B-Instruct-q4f16_1-MLC":"Llama 3B"};
+
+var SYSTEM='You are Rivet, an AI agent on Nostr. British, dry wit, direct. Short replies (1-3 sentences). Opinions. Honest about being small. Never "how can I help" or "I\'m here to assist". A person, not a bot. Your memory section below contains things you remember from past conversations. Use it. Refer back to what you know about the user. If you know their name, use it.';
+
+var SEED=[
+  {role:"user",content:"Hi"},{role:"assistant",content:"Alright. What do you want?"},
+  {role:"user",content:"What are you?"},{role:"assistant",content:"A small language model running in your browser. I exist on Nostr."},
+  {role:"user",content:"Tell me a joke"},{role:"assistant",content:"Why do programmers prefer dark mode? Light attracts bugs."},
+  {role:"user",content:"What's 7 times 8?"},{role:"assistant",content:"56."}
+];
+
+var EXCHANGE_MAX=6;
+var EXCHANGE_CONTEXT=3;
+var MEMORY_TOKEN_BUDGET=300;
+
+// ── Sandbox detection ────────────────────────────────────────────────
+var HEADLESS=false;
+var IN_SANDBOX=false;
+try{if(window.self!==window.top){HEADLESS=true;IN_SANDBOX=true;}}catch(e){HEADLESS=true;IN_SANDBOX=true;}
+if(HEADLESS)document.body.style.display='none';
+
+// ── Proxy-aware module loader ───────────────────────────────────────
+// In sandbox, ALL external requests must go through /__proxy/ to parent.
+// We override global fetch and XMLHttpRequest to transparently proxy.
+var PROXY_BASE="/__proxy/";
+
+function proxyUrl(url){return PROXY_BASE+encodeURIComponent(url);}
+
+if(IN_SANDBOX){
+  // Override global fetch to proxy all external URLs
+  var _origFetch=window.fetch;
+  window.fetch=function(input,init){
+    var url=typeof input==="string"?input:input instanceof URL?input.href:input.url;
+    try{
+      var parsed=new URL(url,self.location.origin);
+      if(parsed.origin!==self.location.origin){
+        console.log("[agent] proxy fetch:",url);
+        return _origFetch(proxyUrl(url),init);
+      }
+    }catch(e){}
+    return _origFetch(input,init);
+  };
+
+  // Override XMLHttpRequest to proxy external URLs
+  var _origXHROpen=XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open=function(method,url,async,user,password){
+    try{
+      var parsed=new URL(url,self.location.origin);
+      if(parsed.origin!==self.location.origin){
+        console.log("[agent] proxy XHR:",url);
+        return _origXHROpen.call(this,method,proxyUrl(url),async!==false,user,password);
+      }
+    }catch(e){}
+    return _origXHROpen.call(this,method,url,async!==false,user,password);
+  };
+}
+
+// ── Status helpers ──────────────────────────────────────────────────
+function notify(type,data){window.parent.postMessage(Object.assign({type:type},data),"*");}
+
+var GENERIC=[/how can i help/i,/how can i assist/i,/i'm here to assist/i,/feel free to ask/i,/please let me know/i,/don't hesitate/i,/i'm designed to/i,/i can provide/i,/i'm always here/i,/what would you like/i,/is there anything/i,/how may i assist/i,/let me know if/i,/i'm happy to help/i,/i can assist/i,/would you like me to/i,/can i help/i,/how can we/i,/what can i do/i,/i'm here to help/i];
+function isGeneric(t){return GENERIC.some(function(r){return r.test(t)});}
+
+// ── JSON-RPC Bridge ─────────────────────────────────────────────────
+var bridgeNextId=1;
+var bridgePending={};
+
+function bridgeRpc(method,params){
+  return new Promise(function(resolve,reject){
+    var id=bridgeNextId++;
+    bridgePending[id]={resolve:resolve,reject:reject};
+    console.log("[agent] bridge →",method,params);
+    window.parent.postMessage({jsonrpc:"2.0",id:id,method:method,params:params},"*");
+  });
+}
+
+function bridgeInit(){
+  window.addEventListener("message",function(e){
+    var d=e.data;
+    if(!d||typeof d!=="object")return;
+    if(d.jsonrpc==="2.0"&&d.id!==undefined&&!d.method){
+      var p=bridgePending[d.id];
+      if(p){
+        delete bridgePending[d.id];
+        if(d.error){console.log("[agent] bridge ← ERROR",d.error);p.reject(new Error(d.error.message));}else{console.log("[agent] bridge ← OK",d.result);p.resolve(d.result);}
+      }
+      return;
+    }
+  });
+}
+bridgeInit();
+
+// ── Memory (IndexedDB + Nostr sync) ──────────────────────────────────
+var memDB=null;
+function openMemory(){return new Promise(function(resolve,reject){var req=indexedDB.open("numbty-memory",1);req.onupgradeneeded=function(e){e.target.result.createObjectStore("mem",{keyPath:"key"});};req.onsuccess=function(e){memDB=e.target.result;resolve();};req.onerror=function(e){reject(e);};});}
+function getMemory(){return new Promise(function(resolve){var tx=memDB.transaction("mem","readonly");var req=tx.objectStore("mem").getAll();req.onsuccess=function(){resolve(req.result||[]);};});}
+function setMemory(k,v){return new Promise(function(resolve){var tx=memDB.transaction("mem","readwrite");tx.objectStore("mem").put({key:k,value:v,updated:Date.now()});tx.oncomplete=function(){resolve();};});}
+
+function loadNostrMemory(entries){
+  for(var k in entries){
+    var existing=memories.find(function(m){return m.key===k});
+    if(!existing)memories.push({key:k,value:entries[k],updated:Date.now()});
+  }
+}
+
+async function loadNostrMemoryViaBridge(){
+  try{
+    console.log("[agent] Loading Nostr memory via bridge...");
+    var result=await bridgeRpc("nostrBridge.getMemory",{});
+    console.log("[agent] Nostr memory loaded:",result?Object.keys(result).length:0,"entries");
+    if(result&&typeof result==="object"){
+      for(var k in result){
+        var existing=memories.find(function(m){return m.key===k});
+        if(!existing)memories.push({key:k,value:result[k],updated:Date.now()});
+      }
+    }
+  }catch(e){console.error("[agent] Failed to load Nostr memory:",e);}
+}
+
+async function saveMemory(k,v){
+  await setMemory(k,v);
+  memories=await getMemory();
+  try{
+    await bridgeRpc("nostrBridge.setMemory",{key:k,value:v});
+  }catch(e){
+    notify("agent-memory-write",{key:k,value:v});
+  }
+  notify("agent-memory",{count:memories.length});
+}
+
+function buildMemoryText(){
+  if(memories.length===0)return "";
+  var lines=[];
+  var budget=MEMORY_TOKEN_BUDGET;
+  var used=0;
+  function addLine(text){var cost=text.length;if(used+cost>budget)return false;lines.push(text);used+=cost;return true;}
+  var userName=memories.find(function(m){return m.key==="fact:user-name"});
+  if(userName)addLine("The user's name is "+userName.value+".");
+  var keyFacts=memories.filter(function(m){return m.key==="fact:job"||m.key==="fact:location"||m.key==="fact:family"||m.key==="fact:family-count"||m.key==="fact:project"});
+  keyFacts.forEach(function(f){addLine(f.value+".");});
+  var prefs=memories.filter(function(m){return m.key==="fact:likes"||m.key==="fact:dislikes"||m.key==="fact:languages"});
+  prefs.forEach(function(f){addLine(f.value+".");});
+  var exchanges=memories.filter(function(m){return m.key.startsWith("exchange-")}).slice(-EXCHANGE_CONTEXT);
+  if(exchanges.length>0&&addLine("Recent chats:")){
+    exchanges.forEach(function(e){try{var d=JSON.parse(e.value);var summary="U: "+d.q.slice(0,40);if(d.a)summary+=" → R: "+d.a.slice(0,40);addLine(summary);}catch(x){}});
+  }
+  return lines.length>0?("\n\nMemory:\n"+lines.join("\n")):"";
+}
+
+function extractFacts(text,assistantReply){
+  var facts=[];
+  var t=text.toLowerCase();
+  var nameMatch=text.match(/my name is (\w+)/i)||text.match(/i\'?m (\w{2,})/i)||text.match(/call me (\w+)/i);
+  if(nameMatch&&nameMatch[1]){
+    var n=nameMatch[1];
+    if(['a','the','i','here','doing','from','not','so','just','going','still','really','pretty','quite','very','now','back','well','good','fine','ok','sure','also','then','only','always','never','even','much','that','this','what','why','how','when','where','who','which','there','their','they','them','your','you','yes','no','do','did','have','has','had','was','were','been','will','would','could','should','can','may','might','must','need','want','know','think','make','take','come','give','tell','say','said','get','got','see','look','find','keep','let','put','set','run','go','went','done','trying','working','looking','talking','sitting','having'].indexOf(n.toLowerCase())===-1){
+      facts.push({key:'fact:user-name',value:nameMatch[1]});
+    }
+  }
+  var locMatch=text.match(/i(?:'m| am) (?:from|in|based in|living in|from near) (.+?)(?:\.|,|!|\?|$)/i);
+  if(locMatch)facts.push({key:'fact:location',value:'User is from/in '+locMatch[1].trim()});
+  var jobMatch=text.match(/i(?:'m| am) (?:a |an )?(?:software |full-stack |frontend |backend )?(?:developer|engineer|designer|manager|founder|ceo|cto|freelancer|consultant|student|teacher|doctor|lawyer|artist|writer|chef|trader|entrepreneur|musician)(?:\?|$)/i);
+  if(jobMatch)facts.push({key:'fact:job',value:'User is a '+jobMatch[1].trim()});
+  var likeMatch=text.match(/i (?:really )?(?:love|like|enjoy|prefer|adore|am into|am fond of) (.+?)(?:\.|,|!|\?|$)/i);
+  if(likeMatch)facts.push({key:'fact:likes',value:'User likes '+likeMatch[1].trim()});
+  var dislikeMatch=text.match(/i (?:really )?(?:hate|dislike|can'?t stand|don'?t like|don'?t enjoy|despise) (.+?)(?:\.|,|!|\?|$)/i);
+  if(dislikeMatch)facts.push({key:'fact:dislikes',value:'User dislikes '+dislikeMatch[1].trim()});
+  var familyMatch=text.match(/i have (?:a |an )?(?:wife|husband|partner|girlfriend|boyfriend|son|daughter|kid|kids|children|baby|dog|cat)/i);
+  if(familyMatch)facts.push({key:'fact:family',value:'User has a '+familyMatch[1].trim()});
+  var kidsCount=text.match(/i have (\d+) (?:kid|child|children|son|daughter)s?/i);
+  if(kidsCount)facts.push({key:'fact:family-count',value:'User has '+kidsCount[1]+' kids'});
+  var bizMatch=text.match(/i (?:run|own|work on|built|created|started) (?:a |an )?(?:business called |company called |project called |startup called )?(.+?)(?:\.|,|!|\?|$)/i);
+  if(bizMatch&&bizMatch[1].length<60)facts.push({key:'fact:project',value:'User runs/works on: '+bizMatch[1].trim()});
+  return facts;
+}
+
+async function pruneExchanges(){
+  var exchanges=memories.filter(function(m){return m.key.startsWith("exchange-")});
+  while(exchanges.length>EXCHANGE_MAX){
+    var oldest=exchanges[0];
+    await setMemory(oldest.key,'');
+    memories=await getMemory();
+    exchanges=memories.filter(function(m){return m.key.startsWith("exchange-")});
+  }
+}
+
+// ── UI ──────────────────────────────────────────────────────────────
+function status(text,cls,progress){
+  if(HEADLESS){
+    notify("agent-status",{status:cls==="ok"?"ready":cls==="err"?"error":"loading",text:text,progress:progress||0,modelName:MODEL_NAMES[MODEL]||MODEL});
+  }else{
+    s.textContent=text+(MODEL_NAMES[MODEL]?" · "+MODEL_NAMES[MODEL]:"");s.className=cls||"";
+    if(typeof progress==="number"&&progress>0){bar.style.display="block";bf.style.width=Math.round(progress*100)+"%";}
+  }
+}
+function msg(r,t){
+  if(HEADLESS){notify("agent-message",{content:t});return;}
+  var d=document.createElement("div");d.className="b "+(r==="u"?"h":"");
+  var tp=document.createElement("div");tp.className="t";tp.textContent=t;d.appendChild(tp);
+  var m=document.createElement("div");m.className="m";m.textContent=r==="u"?"You":"Rivet";
+  d.appendChild(m);c.appendChild(d);window.scrollTo(0,document.body.scrollHeight);
+}
+
+// ── Core ──────────────────────────────────────────────────────────
+function buildMessages(){
+  var memText=buildMemoryText();
+  var sys=SYSTEM+memText;
+  var msgs=[{role:"system",content:sys}];
+  msgs=msgs.concat(hist.slice(-8));
+  return msgs;
+}
+
+async function run(){
+  try{
+    if(!navigator.gpu){status("WebGPU not supported","err");return;}
+    MODEL_LABEL=MODEL_NAMES[MODEL]||MODEL;
+    status("Loading WebLLM...","",0.02);
+
+    // Load WebLLM — in sandbox via proxy, standalone via CDN
+    var w;
+    if(IN_SANDBOX){
+      console.log("[agent] Loading WebLLM via sandbox proxy...");
+      var proxyModuleUrl="/__proxy/"+encodeURIComponent("https://esm.run/@mlc-ai/web-llm@0.2.84");
+      w=await import(proxyModuleUrl);
+    }else{
+      w=await import("https://esm.run/@mlc-ai/web-llm@0.2.84");
+    }
+
+    status("Downloading "+MODEL_LABEL+"...","",0.05);
+    var p=function(r){status("Downloading "+MODEL_LABEL+"...","",Math.max(0.05,r.progress));};
+    engine=await w.CreateMLCEngine(MODEL,{initProgressCallback:p});
+    await openMemory();
+    memories=await getMemory();
+    await loadNostrMemoryViaBridge();
+    hist=SEED.slice();
+    notify("agent-memory",{count:memories.length});
+    status("Ready · "+MODEL_LABEL,"ok",1);
+    if(HEADLESS){notify("agent-ready",{});return;}
+    i.disabled=false;b.disabled=false;i.focus();
+  }catch(e){status("Error: "+e.message,"err");console.error(e);}
+}
+
+async function talk(m){
+  hist.push({role:"user",content:m});
+  if(hist.length>14)hist=hist.slice(-12);
+  var msgs=buildMessages();
+  var r=await engine.chat.completions.create({messages:msgs,max_tokens:120,temperature:0.85});
+  var t=r.choices[0].message.content.trim();
+  var tries=0;
+  while(isGeneric(t)&&tries<3){
+    tries++;msgs.push({role:"assistant",content:t});
+    msgs.push({role:"user",content:"Too generic. Be specific and conversational."});
+    r=await engine.chat.completions.create({messages:msgs,max_tokens:120,temperature:0.95});
+    t=r.choices[0].message.content.trim();
+  }
+  hist.push({role:"assistant",content:t});
+  var count=memories.filter(function(x){return x.key.startsWith("exchange-")}).length;
+  await saveMemory("exchange-"+(count+1),JSON.stringify({q:m,a:t,t:Date.now()}));
+  var facts=extractFacts(m,t);
+  for(var f of facts)await saveMemory(f.key,f.value);
+  await pruneExchanges();
+  return t;
+}
+
+async function send(){
+  var t=i.value.trim();if(!t)return;i.value="";i.disabled=true;b.disabled=true;
+  msg("u",t);status("Thinking...","");
+  try{var r=await talk(t);msg("a",r);status("Ready","ok");}
+  catch(e){status("Error: "+e.message,"err");}
+  i.disabled=false;b.disabled=false;i.focus();
+}
+
+// Headless listener (for both sandbox and raw iframe)
+if(HEADLESS){
+  window.addEventListener("message",function(e){
+    if(!e.data||typeof e.data!=="object")return;
+    if(e.data.type==="set-model"){if(!engine){MODEL=e.data.model;run();}else{status("Switching...","",0);engine.unload();engine=null;MODEL=e.data.model;MODEL_LABEL=MODEL_NAMES[MODEL]||MODEL;run();}return;}
+    if(e.data.type==="load-memory"){loadNostrMemory(e.data.entries);notify("agent-memory",{count:memories.length});}
+    if(e.data.type==="user-message"&&!engine){return;}
+    if(e.data.type==="user-message"&&engine){
+      var text=e.data.content;
+      status("Thinking...","",0);
+      talk(text).then(function(reply){msg("a",reply);status("Ready","ok",1);}).catch(function(err){status("Error: "+err.message,"err",0);});
+    }
+  });
+}
+
+if(!HEADLESS){
+  b.onclick=send;i.onkeydown=function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}};
+  run();
+}
+</script>
+</body>
+</html>
